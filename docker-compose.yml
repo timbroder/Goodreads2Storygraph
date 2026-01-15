@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  goodreads-sync:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: goodreads2storygraph-sync
+    restart: unless-stopped
+
+    # Volume mounts
+    volumes:
+      # Persistent data (logs, artifacts, state)
+      - ./data:/data
+      # Mount source code for development (optional, remove in production)
+      - ./sync:/app/sync:ro
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Override/set environment variables
+    environment:
+      # Timezone for scheduling
+      - TZ=${TZ:-America/New_York}
+
+      # Cron schedule (default: 3 AM daily)
+      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 3 * * *}
+
+      # Playwright/browser settings
+      - HEADLESS=${HEADLESS:-true}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # Optional: Run sync on container start
+      - INITIAL_SYNC=${INITIAL_SYNC:-false}
+
+      # Optional: Limit items synced (for testing)
+      # - MAX_SYNC_ITEMS=100
+
+      # Optional: Dry run mode (export only, no upload)
+      # - DRY_RUN=true
+
+      # Optional: Force full sync even if unchanged
+      # - FORCE_FULL_SYNC=false
+
+    # Resource limits (optional but recommended)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "test", "-f", "/data/logs/sync.log"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Network mode (default bridge is fine)
+    # Use host if you need to access local services
+    # network_mode: bridge
+
+# Volumes (optional named volume instead of bind mount)
+# volumes:
+#   sync-data:
+#     driver: local
