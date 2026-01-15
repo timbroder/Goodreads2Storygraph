@@ -2,6 +2,7 @@
 
 > Automated Docker service for syncing your Goodreads library to TheStoryGraph
 
+[![Tests](https://github.com/timbroder/Goodreads2Storygraph/actions/workflows/tests.yml/badge.svg)](https://github.com/timbroder/Goodreads2Storygraph/actions/workflows/tests.yml)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![Playwright](https://img.shields.io/badge/playwright-automated-orange.svg)](https://playwright.dev/)
