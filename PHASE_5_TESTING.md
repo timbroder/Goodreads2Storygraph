@@ -504,6 +504,530 @@ All tests must pass for Phase 5 to be complete:
 
 ---
 
+## Test 6: Multi-Account Support (Phase 6)
+
+### Purpose
+Verify that the multi-account configuration works correctly, syncing multiple Goodreads → StoryGraph account pairs independently.
+
+### Prerequisites
+- Valid credentials for at least 2 different account pairs
+- Understanding of JSON configuration format
+- Docker container running
+
+---
+
+### 6.1 Single-Account Backwards Compatibility Test
+
+**Purpose:** Verify that existing single-account .env configuration still works (backwards compatibility).
+
+```bash
+# Ensure no accounts.json exists
+docker exec goodreads-sync rm -f /data/config/accounts.json
+
+# Run sync with env vars only
+docker exec goodreads-sync python -m sync.main
+
+# Check logs for success
+docker exec goodreads-sync tail -n 50 /data/logs/sync.log
+```
+
+**Expected Output:**
+- Sync completes successfully using env vars
+- State file created: `/data/state/last_sync_state_default.json`
+- Artifacts created: `/data/artifacts/goodreads_export_default_*.csv`
+- Storage states: `/data/state/playwright_storage_*_default.json`
+- Log shows: "Accounts to sync: 1"
+
+**Success Criteria:**
+- ✅ Single-account mode works without accounts.json
+- ✅ Files use "default" as account name
+- ✅ No errors in logs
+
+---
+
+### 6.2 Multi-Account Configuration Test
+
+**Purpose:** Verify multi-account JSON configuration loads correctly.
+
+#### Step 1: Create Multi-Account Configuration
+
+```bash
+# Create config directory
+docker exec goodreads-sync mkdir -p /data/config
+
+# Copy example to container
+docker cp accounts.example.json goodreads-sync:/data/config/accounts.json
+
+# Edit with real credentials (on host)
+# Option 1: Edit directly on host if you mounted /data/config
+nano data/config/accounts.json
+
+# Option 2: Edit inside container
+docker exec -it goodreads-sync vi /data/config/accounts.json
+```
+
+**Example accounts.json with 2 accounts:**
+```json
+{
+  "accounts": [
+    {
+      "name": "my_account",
+      "goodreads_email": "your-email@example.com",
+      "goodreads_password": "your-password",
+      "storygraph_email": "your-email@example.com",
+      "storygraph_password": "your-password"
+    },
+    {
+      "name": "friend1",
+      "goodreads_email": "friend@example.com",
+      "goodreads_password": "friend-password",
+      "storygraph_email": "friend@example.com",
+      "storygraph_password": "friend-password"
+    }
+  ]
+}
+```
+
+#### Step 2: Verify Configuration Loading
+
+```bash
+# Run sync
+docker exec goodreads-sync python -m sync.main
+
+# Check that both accounts were detected
+docker exec goodreads-sync grep "Accounts to sync" /data/logs/sync.log | tail -1
+```
+
+**Expected Output:**
+```
+Accounts to sync: 2
+```
+
+**Success Criteria:**
+- ✅ Config file loads without errors
+- ✅ Correct number of accounts detected
+- ✅ No validation errors
+
+---
+
+### 6.3 Per-Account State Isolation Test
+
+**Purpose:** Verify that each account maintains independent state and sync history.
+
+```bash
+# List state files
+docker exec goodreads-sync ls -la /data/state/
+
+# View state for account 1
+docker exec goodreads-sync cat /data/state/last_sync_state_my_account.json
+
+# View state for account 2
+docker exec goodreads-sync cat /data/state/last_sync_state_friend1.json
+```
+
+**Expected Output:**
+- Separate state files for each account:
+  - `/data/state/last_sync_state_my_account.json`
+  - `/data/state/last_sync_state_friend1.json`
+- Separate storage states for each account:
+  - `/data/state/playwright_storage_goodreads_my_account.json`
+  - `/data/state/playwright_storage_goodreads_friend1.json`
+  - `/data/state/playwright_storage_storygraph_my_account.json`
+  - `/data/state/playwright_storage_storygraph_friend1.json`
+
+**Sample State File:**
+```json
+{
+  "last_hash": "abc123def456...",
+  "last_sync_timestamp": "2026-01-16T12:00:00",
+  "last_book_count": 150,
+  "account_name": "my_account"
+}
+```
+
+**Success Criteria:**
+- ✅ Each account has its own state file
+- ✅ State files contain correct account_name
+- ✅ Each account has separate browser storage states
+- ✅ Hash and timestamps are independent per account
+
+---
+
+### 6.4 Per-Account Artifact Test
+
+**Purpose:** Verify that export artifacts are tagged with account names.
+
+```bash
+# List artifacts
+docker exec goodreads-sync ls -la /data/artifacts/
+
+# Check for account-tagged files
+docker exec goodreads-sync ls /data/artifacts/ | grep goodreads_export
+```
+
+**Expected Output:**
+```
+goodreads_export_my_account_20260116_120000.csv
+goodreads_export_friend1_20260116_120015.csv
+```
+
+**Success Criteria:**
+- ✅ CSV files are tagged with account names
+- ✅ Timestamps differentiate simultaneous exports
+- ✅ Each account's exports are clearly identifiable
+
+---
+
+### 6.5 Independent Sync Verification Test
+
+**Purpose:** Verify each account syncs independently without interference.
+
+```bash
+# Run full sync
+docker exec goodreads-sync python -m sync.main
+
+# Check logs for both accounts
+docker exec goodreads-sync grep "\[my_account\]" /data/logs/sync.log | tail -20
+docker exec goodreads-sync grep "\[friend1\]" /data/logs/sync.log | tail -20
+
+# Verify summary shows both accounts
+docker exec goodreads-sync grep -A 10 "SYNC SUMMARY" /data/logs/sync.log | tail -15
+```
+
+**Expected Log Output:**
+```
+============================================================
+[my_account] Starting sync
+============================================================
+[my_account] STEP 1: Export from Goodreads
+[my_account] Login successful
+[my_account] Export complete: /data/artifacts/goodreads_export_my_account_*.csv
+[my_account] STEP 2: Validate CSV
+[my_account] CSV validated: 150 books found
+[my_account] STEP 3: Check if upload needed
+[my_account] Upload needed: CSV has changed
+[my_account] STEP 4: Upload to StoryGraph
+[my_account] Upload complete
+[my_account] Sync complete
+============================================================
+[friend1] Starting sync
+============================================================
+[friend1] STEP 1: Export from Goodreads
+...
+```
+
+**Expected Summary:**
+```
+============================================================
+SYNC SUMMARY
+============================================================
+Total accounts: 2
+Successful: 2
+  ✓ my_account
+  ✓ friend1
+Failed: 0
+============================================================
+```
+
+**Success Criteria:**
+- ✅ Both accounts process sequentially
+- ✅ Logs clearly identify which account is being synced
+- ✅ Summary shows success/failure per account
+- ✅ Each account completes all 5 steps
+
+---
+
+### 6.6 Error Isolation Test
+
+**Purpose:** Verify that one account failing doesn't stop other accounts from syncing.
+
+#### Step 1: Introduce Intentional Failure
+
+Edit `/data/config/accounts.json` to add an account with invalid credentials:
+
+```json
+{
+  "accounts": [
+    {
+      "name": "my_account",
+      "goodreads_email": "your-valid-email@example.com",
+      "goodreads_password": "valid-password",
+      "storygraph_email": "your-valid-email@example.com",
+      "storygraph_password": "valid-password"
+    },
+    {
+      "name": "invalid_account",
+      "goodreads_email": "invalid@example.com",
+      "goodreads_password": "wrong-password",
+      "storygraph_email": "invalid@example.com",
+      "storygraph_password": "wrong-password"
+    },
+    {
+      "name": "friend1",
+      "goodreads_email": "friend-valid@example.com",
+      "goodreads_password": "friend-valid-password",
+      "storygraph_email": "friend-valid@example.com",
+      "storygraph_password": "friend-valid-password"
+    }
+  ]
+}
+```
+
+#### Step 2: Run Sync and Verify Error Isolation
+
+```bash
+# Run sync
+docker exec goodreads-sync python -m sync.main
+
+# Check exit code (should be 1 due to failure)
+echo $?
+
+# Check summary
+docker exec goodreads-sync grep -A 15 "SYNC SUMMARY" /data/logs/sync.log | tail -20
+```
+
+**Expected Output:**
+```
+============================================================
+SYNC SUMMARY
+============================================================
+Total accounts: 3
+Successful: 2
+  ✓ my_account
+  ✓ friend1
+Failed: 1
+  ✗ invalid_account
+============================================================
+```
+
+**Expected Behavior:**
+- Exit code: 1 (failure detected)
+- Valid accounts complete successfully
+- Invalid account fails with error message
+- Other accounts unaffected by the failure
+
+**Success Criteria:**
+- ✅ Valid accounts sync successfully despite other failures
+- ✅ Failed account clearly identified in summary
+- ✅ Error logged but doesn't crash entire process
+- ✅ Exit code reflects that at least one account failed
+
+---
+
+### 6.7 Configuration Validation Test
+
+**Purpose:** Verify that configuration validation catches common errors.
+
+#### Test 1: Empty Accounts Array
+
+```json
+{
+  "accounts": []
+}
+```
+
+**Expected:** Error message: "No accounts configured"
+
+#### Test 2: Duplicate Account Names
+
+```json
+{
+  "accounts": [
+    {
+      "name": "my_account",
+      "goodreads_email": "email1@example.com",
+      "goodreads_password": "pass1",
+      "storygraph_email": "email1@example.com",
+      "storygraph_password": "pass1"
+    },
+    {
+      "name": "my_account",
+      "goodreads_email": "email2@example.com",
+      "goodreads_password": "pass2",
+      "storygraph_email": "email2@example.com",
+      "storygraph_password": "pass2"
+    }
+  ]
+}
+```
+
+**Expected:** Error message: "Duplicate account names found: my_account"
+
+#### Test 3: Missing Required Fields
+
+```json
+{
+  "accounts": [
+    {
+      "name": "test_account",
+      "goodreads_email": "email@example.com"
+    }
+  ]
+}
+```
+
+**Expected:** Error message: "Account 'test_account' missing required fields"
+
+#### Test 4: Invalid Account Name
+
+```json
+{
+  "accounts": [
+    {
+      "name": "my account with spaces!",
+      "goodreads_email": "email@example.com",
+      "goodreads_password": "pass",
+      "storygraph_email": "email@example.com",
+      "storygraph_password": "pass"
+    }
+  ]
+}
+```
+
+**Expected:** Error message: "Account name must contain only alphanumeric characters and underscores"
+
+**Success Criteria:**
+- ✅ All validation errors caught before sync starts
+- ✅ Clear error messages for each validation failure
+- ✅ No crashes or undefined behavior
+
+---
+
+### 6.8 Logging Test
+
+**Purpose:** Verify that multi-account logging clearly identifies which account is being processed.
+
+```bash
+# Run sync
+docker exec goodreads-sync python -m sync.main
+
+# Extract account-specific logs
+docker exec goodreads-sync grep -E "\[(my_account|friend1)\]" /data/logs/sync.log | tail -50
+
+# Check log structure
+docker exec goodreads-sync ls -la /data/logs/runs/
+```
+
+**Expected Output:**
+- All log entries prefixed with `[account_name]`
+- Clear separation between account operations
+- Single run log file contains all accounts
+- Rotating logs work correctly
+
+**Success Criteria:**
+- ✅ Account name clearly visible in every log entry
+- ✅ Easy to filter logs by account
+- ✅ No log entry ambiguity about which account is active
+- ✅ Per-run logs include all accounts
+
+---
+
+### 6.9 Skip Logic Per-Account Test
+
+**Purpose:** Verify that skip logic works independently for each account.
+
+#### Step 1: Initial Sync
+
+```bash
+# Run first sync for both accounts
+docker exec goodreads-sync python -m sync.main
+
+# Verify state saved for both
+docker exec goodreads-sync ls /data/state/last_sync_state_*.json
+```
+
+#### Step 2: Run Again Without Changes
+
+```bash
+# Immediately run again (no changes to libraries)
+docker exec goodreads-sync python -m sync.main
+
+# Check logs for skip messages
+docker exec goodreads-sync grep "Skipping upload" /data/logs/sync.log | tail -5
+```
+
+**Expected Output:**
+```
+[my_account] Skipping upload: CSV unchanged since 2026-01-16T12:00:00
+[friend1] Skipping upload: CSV unchanged since 2026-01-16T12:00:05
+```
+
+#### Step 3: Force Sync One Account
+
+```bash
+# Modify state for one account to trigger upload
+docker exec goodreads-sync rm /data/state/last_sync_state_my_account.json
+
+# Run sync again
+docker exec goodreads-sync python -m sync.main
+
+# Verify one uploaded, one skipped
+docker exec goodreads-sync grep -E "(Upload needed|Skipping upload)" /data/logs/sync.log | tail -5
+```
+
+**Expected Output:**
+```
+[my_account] Upload needed: No previous state found
+[friend1] Skipping upload: CSV unchanged since 2026-01-16T12:00:05
+```
+
+**Success Criteria:**
+- ✅ Each account's skip logic is independent
+- ✅ Changing one account's state doesn't affect others
+- ✅ Skip/upload decisions made per-account
+- ✅ Logs clearly show reasoning for each account
+
+---
+
+### 6.10 Cron Multi-Account Test
+
+**Purpose:** Verify that cron executes multi-account sync correctly on schedule.
+
+```bash
+# Set rapid schedule for testing
+docker compose down
+# Edit .env: CRON_SCHEDULE=*/2 * * * *
+docker compose up -d
+
+# Wait 3-4 minutes and check logs
+sleep 240
+docker logs goodreads-sync | tail -100
+
+# Verify both accounts synced
+docker exec goodreads-sync grep "Total accounts:" /data/logs/sync.log | tail -5
+```
+
+**Expected Output:**
+- Cron executes sync every 2 minutes
+- Both accounts processed in each run
+- Summary shows correct account count
+- No cron-specific errors
+
+**Success Criteria:**
+- ✅ Cron runs multi-account sync correctly
+- ✅ All accounts processed on schedule
+- ✅ No permission or environment issues
+- ✅ Logs captured correctly for cron runs
+
+---
+
+## Multi-Account Test Summary
+
+After completing all multi-account tests, verify:
+
+- ✅ **Configuration**: JSON loads correctly, validates properly
+- ✅ **State Isolation**: Each account has independent state
+- ✅ **Artifacts**: Files tagged with account names
+- ✅ **Independent Sync**: Accounts don't interfere with each other
+- ✅ **Error Isolation**: One failure doesn't stop others
+- ✅ **Logging**: Clear account identification in logs
+- ✅ **Skip Logic**: Works independently per account
+- ✅ **Backwards Compatibility**: Single-account mode still works
+- ✅ **Cron Integration**: Multi-account works with scheduled runs
+- ✅ **Validation**: Catches configuration errors
+
+---
+
 ## Restoring Default Schedule
 
 After rapid testing, restore the normal schedule:
@@ -523,4 +1047,19 @@ docker compose up -d
 
 ## Conclusion
 
-Once all tests pass, Phase 5 is complete and the service is ready for production use. Document any issues found and ensure they are resolved before finalizing the phase.
+Once all tests pass (Phase 5 and Phase 6), the service is ready for production use with full multi-account support. Document any issues found and ensure they are resolved before finalizing.
+
+### Phase 5 Completion Checklist
+- ✅ Cron scheduling works correctly
+- ✅ Artifacts and logs persist in /data volume
+- ✅ State management works as expected
+- ✅ All environment variables properly passed
+
+### Phase 6 Completion Checklist
+- ✅ Multi-account configuration loads correctly
+- ✅ Per-account state isolation verified
+- ✅ Error isolation between accounts works
+- ✅ Backwards compatibility maintained
+- ✅ Logging clearly identifies accounts
+- ✅ Configuration validation catches errors
+- ✅ Cron integration with multi-account verified
