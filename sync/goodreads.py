@@ -18,7 +18,7 @@ logger = logging.getLogger("sync.goodreads")
 class GoodreadsClient:
     """Client for automating Goodreads library export."""
 
-    def __init__(self, browser: Browser, email: str, password: str):
+    def __init__(self, browser: Browser, email: str, password: str, account_name: str = "default"):
         """
         Initialize Goodreads client.
 
@@ -26,12 +26,14 @@ class GoodreadsClient:
             browser: Playwright browser instance
             email: Goodreads login email
             password: Goodreads login password
+            account_name: Unique account identifier for state isolation
         """
         self.browser = browser
         self.email = email
         self.password = password
+        self.account_name = account_name
         self.page: Optional[Page] = None
-        self.storage_state_path = Path("/data/state/playwright_storage_goodreads.json")
+        self.storage_state_path = Path(f"/data/state/playwright_storage_goodreads_{account_name}.json")
 
     def login(self) -> None:
         """
@@ -108,7 +110,7 @@ class GoodreadsClient:
 
             # Set up download handler
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            download_path = Path(f"/data/artifacts/goodreads_export_{timestamp}.csv")
+            download_path = Path(f"/data/artifacts/goodreads_export_{self.account_name}_{timestamp}.csv")
 
             logger.info("Triggering export")
             with self.page.expect_download(timeout=60000) as download_info:

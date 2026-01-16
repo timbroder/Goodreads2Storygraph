@@ -1,0 +1,25 @@
+{
+  "accounts": [
+    {
+      "name": "my_account",
+      "goodreads_email": "your-email@example.com",
+      "goodreads_password": "your-goodreads-password",
+      "storygraph_email": "your-email@example.com",
+      "storygraph_password": "your-storygraph-password"
+    },
+    {
+      "name": "friend1",
+      "goodreads_email": "friend1@example.com",
+      "goodreads_password": "friend1-goodreads-password",
+      "storygraph_email": "friend1@example.com",
+      "storygraph_password": "friend1-storygraph-password"
+    },
+    {
+      "name": "friend2",
+      "goodreads_email": "friend2@example.com",
+      "goodreads_password": "friend2-goodreads-password",
+      "storygraph_email": "friend2@example.com",
+      "storygraph_password": "friend2-storygraph-password"
+    }
+  ]
+}

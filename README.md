@@ -27,6 +27,7 @@ Manually exporting from Goodreads and importing to StoryGraph is tedious. This t
 ## ✨ Features
 
 - ✅ **Fully Automated** - Set-it-and-forget-it scheduling with cron
+- ✅ **Multi-Account Support** - Sync multiple Goodreads → StoryGraph account pairs
 - ✅ **Smart Sync** - Only uploads when your library changes (hash-based comparison)
 - ✅ **Session Persistence** - Reuses login sessions to avoid repeated logins
 - ✅ **Docker-Based** - No manual dependency management
@@ -78,6 +79,71 @@ docker compose up -d
 ```
 
 That's it! The service will now run automatically based on your schedule (default: daily at 3 AM).
+
+---
+
+## 👥 Multi-Account Support
+
+**NEW**: You can now sync multiple Goodreads → StoryGraph account pairs! Perfect for:
+- Managing your friends' accounts
+- Syncing family members' libraries
+- Maintaining multiple personal accounts
+
+### Setup Multi-Account Mode
+
+1. **Create the accounts configuration file:**
+
+```bash
+# Copy the example
+cp accounts.example.json /data/config/accounts.json
+
+# Edit with your accounts
+nano /data/config/accounts.json
+```
+
+2. **Add your accounts:**
+
+```json
+{
+  "accounts": [
+    {
+      "name": "my_account",
+      "goodreads_email": "me@example.com",
+      "goodreads_password": "my-password",
+      "storygraph_email": "me@example.com",
+      "storygraph_password": "my-password"
+    },
+    {
+      "name": "friend1",
+      "goodreads_email": "friend1@example.com",
+      "goodreads_password": "friend-password",
+      "storygraph_email": "friend1@example.com",
+      "storygraph_password": "friend-password"
+    }
+  ]
+}
+```
+
+3. **Restart the service:**
+
+```bash
+docker compose restart
+```
+
+### How Multi-Account Works
+
+- **Independent State**: Each account has its own sync history and state tracking
+- **Separate Sessions**: Browser sessions are isolated per account (no login conflicts)
+- **Error Isolation**: If one account fails, others continue syncing
+- **Organized Artifacts**: Exports and logs are tagged with account names
+- **Backwards Compatible**: Single-account `.env` credentials still work if no `accounts.json` exists
+
+### Account Naming
+
+Account names must:
+- Be unique
+- Contain only alphanumeric characters and underscores
+- Examples: `my_account`, `friend1`, `john_doe_2024`
 
 ---
 
@@ -173,6 +239,7 @@ The service maintains a hash of your last exported CSV. If your Goodreads librar
 Goodreads2Storygraph/
 ├── sync/                      # Core Python package
 │   ├── main.py               # Entry point & orchestration
+│   ├── config.py             # Multi-account configuration loader
 │   ├── goodreads.py          # Goodreads export automation
 │   ├── storygraph.py         # StoryGraph upload automation
 │   ├── state.py              # Hash tracking & persistence
@@ -185,11 +252,20 @@ Goodreads2Storygraph/
 │   ├── entrypoint.sh         # Startup script
 │   └── crontab               # Cron template
 ├── data/                      # Persistent data (mounted volume)
+│   ├── config/               # Multi-account configuration
+│   │   └── accounts.json     # Account credentials (if using multi-account)
 │   ├── logs/                 # Sync logs
 │   ├── artifacts/            # Exported CSVs & screenshots
-│   └── state/                # Session & sync state
+│   │   ├── goodreads_export_account1_*.csv
+│   │   └── goodreads_export_account2_*.csv
+│   └── state/                # Session & sync state (per-account)
+│       ├── last_sync_state_account1.json
+│       ├── last_sync_state_account2.json
+│       ├── playwright_storage_goodreads_account1.json
+│       └── playwright_storage_storygraph_account1.json
 ├── docker-compose.yml        # Service orchestration
 ├── .env.example              # Configuration template
+├── accounts.example.json     # Multi-account template
 └── README_SYNC.md            # Detailed documentation
 ```
 

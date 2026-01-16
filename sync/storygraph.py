@@ -17,7 +17,7 @@ logger = logging.getLogger("sync.storygraph")
 class StoryGraphClient:
     """Client for automating StoryGraph CSV import."""
 
-    def __init__(self, browser: Browser, email: str, password: str):
+    def __init__(self, browser: Browser, email: str, password: str, account_name: str = "default"):
         """
         Initialize StoryGraph client.
 
@@ -25,12 +25,14 @@ class StoryGraphClient:
             browser: Playwright browser instance
             email: StoryGraph login email
             password: StoryGraph login password
+            account_name: Unique account identifier for state isolation
         """
         self.browser = browser
         self.email = email
         self.password = password
+        self.account_name = account_name
         self.page: Optional[Page] = None
-        self.storage_state_path = Path("/data/state/playwright_storage_storygraph.json")
+        self.storage_state_path = Path(f"/data/state/playwright_storage_storygraph_{account_name}.json")
 
     def login(self) -> None:
         """
