@@ -1,207 +1,227 @@
 """Main entry point for Goodreads to StoryGraph sync."""
 
-import os
+import logging
 import sys
-from pathlib import Path
+from playwright.sync_api import Browser, sync_playwright
 
-from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
-
+from .config import AccountConfig, Config, load_config
 from .exceptions import GoodreadsExportError, StateError, StoryGraphUploadError, SyncError
 from .goodreads import GoodreadsClient
 from .logging_setup import setup_logging
-from .state import load_state, save_state, should_skip_upload
+from .state import calculate_csv_hash, load_state, save_state, should_skip_upload
 from .storygraph import StoryGraphClient
 from .transform import count_books, validate_csv
 
 
-def get_config() -> dict:
+def sync_account(account: AccountConfig, config: Config, browser: Browser, logger: logging.Logger) -> bool:
     """
-    Load configuration from environment variables.
+    Sync a single account from Goodreads to StoryGraph.
+
+    Args:
+        account: Account configuration
+        config: Global configuration
+        browser: Playwright browser instance
+        logger: Logger instance
 
     Returns:
-        Dictionary with configuration values
-
-    Raises:
-        SyncError: If required env vars are missing
+        True if sync succeeded, False if failed
     """
-    # Load .env file if it exists
-    env_path = Path(".env")
-    if env_path.exists():
-        load_dotenv(env_path)
+    account_prefix = f"[{account.name}]"
 
-    config = {
-        "goodreads_email": os.getenv("GOODREADS_EMAIL"),
-        "goodreads_password": os.getenv("GOODREADS_PASSWORD"),
-        "storygraph_email": os.getenv("STORYGRAPH_EMAIL"),
-        "storygraph_password": os.getenv("STORYGRAPH_PASSWORD"),
-        "headless": os.getenv("HEADLESS", "true").lower() == "true",
-        "log_level": os.getenv("LOG_LEVEL", "INFO"),
-        "dry_run": os.getenv("DRY_RUN", "false").lower() == "true",
-        "force_sync": os.getenv("FORCE_FULL_SYNC", "false").lower() == "true",
-        "max_sync_items": os.getenv("MAX_SYNC_ITEMS"),
-    }
+    try:
+        logger.info("=" * 60)
+        logger.info(f"{account_prefix} Starting sync")
+        logger.info("=" * 60)
 
-    # Validate required fields
-    required = [
-        "goodreads_email",
-        "goodreads_password",
-        "storygraph_email",
-        "storygraph_password",
-    ]
+        # Display current state
+        try:
+            state = load_state(account.name)
+            if state:
+                logger.info(f"{account_prefix} Last sync: {state['last_sync_timestamp']}")
+                logger.info(f"{account_prefix} Last book count: {state['last_book_count']}")
+        except StateError as e:
+            logger.warning(f"{account_prefix} Could not load state: {e}")
 
-    missing = [key for key in required if not config.get(key)]
-    if missing:
-        raise SyncError(f"Missing required environment variables: {', '.join(missing)}")
+        # Step 1: Export from Goodreads
+        logger.info("-" * 60)
+        logger.info(f"{account_prefix} STEP 1: Export from Goodreads")
+        logger.info("-" * 60)
 
-    return config
+        goodreads_client = GoodreadsClient(
+            browser,
+            account.goodreads_email,
+            account.goodreads_password,
+            account.name
+        )
+
+        goodreads_client.login()
+        csv_path = goodreads_client.export_library()
+        goodreads_client.close()
+
+        logger.info(f"{account_prefix} Export complete: {csv_path}")
+
+        # Step 2: Validate CSV
+        logger.info("-" * 60)
+        logger.info(f"{account_prefix} STEP 2: Validate CSV")
+        logger.info("-" * 60)
+
+        validate_csv(csv_path)
+        book_count = count_books(csv_path)
+        logger.info(f"{account_prefix} CSV validated: {book_count} books found")
+
+        # Apply MAX_SYNC_ITEMS limit if set
+        if config.max_sync_items:
+            if book_count > config.max_sync_items:
+                logger.warning(
+                    f"{account_prefix} MAX_SYNC_ITEMS set to {config.max_sync_items}, "
+                    f"but CSV has {book_count} books. This may cause issues with upload."
+                )
+
+        # Step 3: Check if upload needed
+        logger.info("-" * 60)
+        logger.info(f"{account_prefix} STEP 3: Check if upload needed")
+        logger.info("-" * 60)
+
+        skip_upload, reason = should_skip_upload(csv_path, account.name, config.force_sync)
+
+        if skip_upload:
+            logger.info(f"{account_prefix} Skipping upload: {reason}")
+            logger.info("=" * 60)
+            logger.info(f"{account_prefix} Sync complete (no upload needed)")
+            logger.info("=" * 60)
+            return True
+
+        logger.info(f"{account_prefix} Upload needed: {reason}")
+
+        # Step 4: Upload to StoryGraph
+        if config.dry_run:
+            logger.info("-" * 60)
+            logger.info(f"{account_prefix} DRY RUN: Skipping upload to StoryGraph")
+            logger.info("-" * 60)
+        else:
+            logger.info("-" * 60)
+            logger.info(f"{account_prefix} STEP 4: Upload to StoryGraph")
+            logger.info("-" * 60)
+
+            storygraph_client = StoryGraphClient(
+                browser,
+                account.storygraph_email,
+                account.storygraph_password,
+                account.name
+            )
+
+            storygraph_client.login()
+            storygraph_client.upload_csv(csv_path)
+            storygraph_client.close()
+
+            logger.info(f"{account_prefix} Upload complete")
+
+            # Step 5: Update state
+            logger.info("-" * 60)
+            logger.info(f"{account_prefix} STEP 5: Update state")
+            logger.info("-" * 60)
+
+            csv_hash = calculate_csv_hash(csv_path)
+            save_state(csv_hash, book_count, account.name)
+
+            logger.info(f"{account_prefix} State updated successfully")
+
+        logger.info("=" * 60)
+        logger.info(f"{account_prefix} Sync complete")
+        logger.info("=" * 60)
+        return True
+
+    except GoodreadsExportError as e:
+        logger.error(f"{account_prefix} Goodreads export failed: {e}")
+        return False
+    except StoryGraphUploadError as e:
+        logger.error(f"{account_prefix} StoryGraph upload failed: {e}")
+        return False
+    except StateError as e:
+        logger.error(f"{account_prefix} State error: {e}")
+        return False
+    except Exception as e:
+        logger.exception(f"{account_prefix} Unexpected error: {e}")
+        return False
 
 
 def main() -> int:
     """
-    Main sync workflow.
+    Main sync workflow supporting multiple accounts.
 
     Returns:
-        Exit code (0 for success, 1 for failure)
+        Exit code (0 if all accounts succeeded, 1 if any failed)
     """
+    logger = None
     try:
         # Load configuration
-        config = get_config()
+        config = load_config()
 
         # Setup logging
-        logger, run_log_path = setup_logging(config["log_level"])
+        logger, run_log_path = setup_logging(config.log_level)
         logger.info("=" * 60)
         logger.info("Starting Goodreads → StoryGraph sync")
         logger.info(f"Run log: {run_log_path}")
+        logger.info(f"Accounts to sync: {len(config.accounts)}")
         logger.info("=" * 60)
 
-        if config["dry_run"]:
+        if config.dry_run:
             logger.info("DRY RUN MODE - Will export but not upload")
 
-        if config["force_sync"]:
+        if config.force_sync:
             logger.info("FORCE SYNC MODE - Will upload even if unchanged")
-
-        # Display current state
-        try:
-            state = load_state()
-            if state:
-                logger.info(f"Last sync: {state['last_sync_timestamp']}")
-                logger.info(f"Last book count: {state['last_book_count']}")
-        except StateError as e:
-            logger.warning(f"Could not load state: {e}")
 
         # Initialize Playwright
         logger.info("Initializing browser")
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=config["headless"])
+            browser = playwright.chromium.launch(headless=config.headless)
 
             try:
-                # Step 1: Export from Goodreads
-                logger.info("-" * 60)
-                logger.info("STEP 1: Export from Goodreads")
-                logger.info("-" * 60)
+                # Sync each account
+                results = {}
+                for account in config.accounts:
+                    success = sync_account(account, config, browser, logger)
+                    results[account.name] = success
 
-                goodreads_client = GoodreadsClient(
-                    browser,
-                    config["goodreads_email"],
-                    config["goodreads_password"]
-                )
+                # Summary
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info("SYNC SUMMARY")
+                logger.info("=" * 60)
 
-                goodreads_client.login()
-                csv_path = goodreads_client.export_library()
-                goodreads_client.close()
+                successful = [name for name, success in results.items() if success]
+                failed = [name for name, success in results.items() if not success]
 
-                logger.info(f"Export complete: {csv_path}")
+                logger.info(f"Total accounts: {len(results)}")
+                logger.info(f"Successful: {len(successful)}")
+                if successful:
+                    for name in successful:
+                        logger.info(f"  ✓ {name}")
 
-                # Step 2: Validate CSV
-                logger.info("-" * 60)
-                logger.info("STEP 2: Validate CSV")
-                logger.info("-" * 60)
-
-                validate_csv(csv_path)
-                book_count = count_books(csv_path)
-                logger.info(f"CSV validated: {book_count} books found")
-
-                # Apply MAX_SYNC_ITEMS limit if set
-                if config["max_sync_items"]:
-                    max_items = int(config["max_sync_items"])
-                    if book_count > max_items:
-                        logger.warning(
-                            f"MAX_SYNC_ITEMS set to {max_items}, but CSV has {book_count} books. "
-                            "This may cause issues with upload. Consider removing the limit."
-                        )
-
-                # Step 3: Check if upload needed
-                logger.info("-" * 60)
-                logger.info("STEP 3: Check if upload needed")
-                logger.info("-" * 60)
-
-                skip_upload, reason = should_skip_upload(csv_path, config["force_sync"])
-
-                if skip_upload:
-                    logger.info(f"Skipping upload: {reason}")
-                    logger.info("=" * 60)
-                    logger.info("Sync complete (no upload needed)")
-                    logger.info("=" * 60)
-                    return 0
-
-                logger.info(f"Upload needed: {reason}")
-
-                # Step 4: Upload to StoryGraph
-                if config["dry_run"]:
-                    logger.info("-" * 60)
-                    logger.info("DRY RUN: Skipping upload to StoryGraph")
-                    logger.info("-" * 60)
-                else:
-                    logger.info("-" * 60)
-                    logger.info("STEP 4: Upload to StoryGraph")
-                    logger.info("-" * 60)
-
-                    storygraph_client = StoryGraphClient(
-                        browser,
-                        config["storygraph_email"],
-                        config["storygraph_password"]
-                    )
-
-                    storygraph_client.login()
-                    storygraph_client.upload_csv(csv_path)
-                    storygraph_client.close()
-
-                    logger.info("Upload complete")
-
-                    # Step 5: Update state
-                    logger.info("-" * 60)
-                    logger.info("STEP 5: Update state")
-                    logger.info("-" * 60)
-
-                    from .state import calculate_csv_hash
-                    csv_hash = calculate_csv_hash(csv_path)
-                    save_state(csv_hash, book_count)
-
-                    logger.info("State updated successfully")
+                logger.info(f"Failed: {len(failed)}")
+                if failed:
+                    for name in failed:
+                        logger.error(f"  ✗ {name}")
 
                 logger.info("=" * 60)
-                logger.info("Sync complete")
-                logger.info("=" * 60)
-                return 0
+
+                # Return 0 only if all succeeded
+                return 0 if not failed else 1
 
             finally:
                 browser.close()
 
-    except GoodreadsExportError as e:
-        logger.error(f"Goodreads export failed: {e}")
-        return 1
-    except StoryGraphUploadError as e:
-        logger.error(f"StoryGraph upload failed: {e}")
-        return 1
-    except StateError as e:
-        logger.error(f"State error: {e}")
-        return 1
     except SyncError as e:
-        logger.error(f"Sync error: {e}")
+        if logger:
+            logger.error(f"Configuration error: {e}")
+        else:
+            print(f"Configuration error: {e}", file=sys.stderr)
         return 1
     except Exception as e:
-        logger.exception(f"Unexpected error: {e}")
+        if logger:
+            logger.exception(f"Unexpected error: {e}")
+        else:
+            print(f"Unexpected error: {e}", file=sys.stderr)
         return 1
 
 

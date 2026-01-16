@@ -10,8 +10,8 @@ import pytest
 
 from sync.exceptions import StateError
 from sync.state import (
-    STATE_FILE,
     calculate_csv_hash,
+    get_state_file,
     load_state,
     save_state,
     should_skip_upload,
@@ -55,15 +55,39 @@ class TestCalculateCSVHash:
 
         assert hash1 != hash2
 
-    def test_calculate_hash_missing_file(self):
-        """Test error handling for missing file."""
-        with pytest.raises(StateError, match="Failed to calculate hash"):
-            calculate_csv_hash("/nonexistent/file.csv")
+    def test_calculate_hash_format(self, tmp_path):
+        """Test hash is valid SHA256 format."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Title\nContent\n")
+
+        hash_result = calculate_csv_hash(str(csv_file))
+
+        # SHA256 hex digest should only contain 0-9 and a-f
+        assert all(c in "0123456789abcdef" for c in hash_result)
+
+    def test_calculate_hash_matches_manual_calculation(self, tmp_path):
+        """Test hash matches manual SHA256 calculation."""
+        import hashlib
+
+        csv_file = tmp_path / "test.csv"
+        content = "Title,Author\nTest,Test\n"
+        csv_file.write_text(content)
+
+        # Manual calculation
+        sha256_hash = hashlib.sha256()
+        sha256_hash.update(content.encode())
+        expected_hash = sha256_hash.hexdigest()
+
+        # Function calculation
+        result_hash = calculate_csv_hash(str(csv_file))
+
+        assert result_hash == expected_hash
 
     def test_calculate_hash_large_file(self, tmp_path):
-        """Test hash calculation for large files (tests chunked reading)."""
+        """Test hash calculation for large file."""
         csv_file = tmp_path / "large.csv"
-        # Create file larger than 4096 bytes (chunk size)
+
+        # Create a CSV with 1000 lines
         with open(csv_file, "w") as f:
             f.write("Title,Author\n")
             for i in range(1000):
@@ -71,7 +95,13 @@ class TestCalculateCSVHash:
 
         hash_result = calculate_csv_hash(str(csv_file))
 
+        assert isinstance(hash_result, str)
         assert len(hash_result) == 64
+
+    def test_calculate_hash_missing_file(self):
+        """Test error for missing file."""
+        with pytest.raises(StateError, match="Failed to calculate hash"):
+            calculate_csv_hash("/nonexistent/file.csv")
 
 
 class TestLoadState:
@@ -79,8 +109,8 @@ class TestLoadState:
 
     def test_load_state_missing_file(self, tmp_path):
         """Test loading when state file doesn't exist."""
-        with patch("sync.state.STATE_FILE", tmp_path / "nonexistent.json"):
-            result = load_state()
+        with patch("sync.state.get_state_file", return_value=tmp_path / "nonexistent.json"):
+            result = load_state("test_account")
             assert result is None
 
     def test_load_state_valid(self, tmp_path):
@@ -89,12 +119,13 @@ class TestLoadState:
         state_data = {
             "last_hash": "abc123",
             "last_sync_timestamp": "2024-01-01T00:00:00",
-            "last_book_count": 42
+            "last_book_count": 42,
+            "account_name": "test_account"
         }
         state_file.write_text(json.dumps(state_data))
 
-        with patch("sync.state.STATE_FILE", state_file):
-            result = load_state()
+        with patch("sync.state.get_state_file", return_value=state_file):
+            result = load_state("test_account")
 
         assert result == state_data
         assert result["last_hash"] == "abc123"
@@ -106,18 +137,18 @@ class TestLoadState:
         state_data = {"last_hash": "abc123"}  # Missing other required keys
         state_file.write_text(json.dumps(state_data))
 
-        with patch("sync.state.STATE_FILE", state_file):
+        with patch("sync.state.get_state_file", return_value=state_file):
             with pytest.raises(StateError, match="missing required keys"):
-                load_state()
+                load_state("test_account")
 
     def test_load_state_corrupted_json(self, tmp_path):
         """Test error handling for corrupted JSON."""
         state_file = tmp_path / "state.json"
         state_file.write_text("{invalid json")
 
-        with patch("sync.state.STATE_FILE", state_file):
+        with patch("sync.state.get_state_file", return_value=state_file):
             with pytest.raises(StateError, match="corrupted"):
-                load_state()
+                load_state("test_account")
 
     def test_load_state_all_required_keys_present(self, tmp_path):
         """Test validation succeeds when all required keys present."""
@@ -130,8 +161,8 @@ class TestLoadState:
         }
         state_file.write_text(json.dumps(state_data))
 
-        with patch("sync.state.STATE_FILE", state_file):
-            result = load_state()
+        with patch("sync.state.get_state_file", return_value=state_file):
+            result = load_state("test_account")
 
         assert result["last_hash"] == "def456"
         assert result["last_book_count"] == 100
@@ -142,99 +173,102 @@ class TestSaveState:
 
     def test_save_state_creates_directory(self, tmp_path):
         """Test save creates parent directories if they don't exist."""
-        state_file = tmp_path / "new_dir" / "state.json"
+        state_dir = tmp_path / "nested" / "dir"
+        state_file = state_dir / "state.json"
 
-        with patch("sync.state.STATE_FILE", state_file):
-            save_state(csv_hash="abc123", book_count=10)
+        with patch("sync.state.get_state_file", return_value=state_file):
+            save_state(csv_hash="abc123", book_count=10, account_name="test_account")
 
         assert state_file.exists()
-        assert state_file.parent.exists()
+        assert state_dir.exists()
 
     def test_save_state_valid_content(self, tmp_path):
-        """Test save writes correct state structure."""
+        """Test saved state contains correct data."""
         state_file = tmp_path / "state.json"
 
-        with patch("sync.state.STATE_FILE", state_file):
-            save_state(csv_hash="xyz789", book_count=25)
+        with patch("sync.state.get_state_file", return_value=state_file):
+            save_state(csv_hash="xyz789", book_count=25, account_name="test_account")
 
-        # Read and verify content
+        assert state_file.exists()
+
         with open(state_file) as f:
-            state = json.load(f)
+            data = json.load(f)
 
-        assert state["last_hash"] == "xyz789"
-        assert state["last_book_count"] == 25
-        assert "last_sync_timestamp" in state
+        assert data["last_hash"] == "xyz789"
+        assert data["last_book_count"] == 25
+        assert data["account_name"] == "test_account"
+        assert "last_sync_timestamp" in data
 
-        # Verify timestamp is valid ISO format
-        datetime.fromisoformat(state["last_sync_timestamp"])
+        # Verify timestamp format
+        datetime.fromisoformat(data["last_sync_timestamp"])
 
     def test_save_state_overwrites_existing(self, tmp_path):
-        """Test save overwrites existing state file."""
+        """Test saving overwrites existing state file."""
         state_file = tmp_path / "state.json"
-        old_state = {
+
+        # Create initial state
+        initial_data = {
             "last_hash": "old_hash",
             "last_sync_timestamp": "2024-01-01T00:00:00",
-            "last_book_count": 10
+            "last_book_count": 5
         }
-        state_file.write_text(json.dumps(old_state))
+        state_file.write_text(json.dumps(initial_data))
 
-        with patch("sync.state.STATE_FILE", state_file):
-            save_state(csv_hash="new_hash", book_count=20)
+        with patch("sync.state.get_state_file", return_value=state_file):
+            save_state(csv_hash="new_hash", book_count=20, account_name="test_account")
 
-        # Read and verify new content
         with open(state_file) as f:
-            state = json.load(f)
+            data = json.load(f)
 
-        assert state["last_hash"] == "new_hash"
-        assert state["last_book_count"] == 20
-        assert state["last_hash"] != "old_hash"
+        assert data["last_hash"] == "new_hash"
+        assert data["last_book_count"] == 20
 
     def test_save_state_timestamp_format(self, tmp_path):
         """Test timestamp is in ISO format."""
         state_file = tmp_path / "state.json"
 
-        with patch("sync.state.STATE_FILE", state_file):
-            before_save = datetime.utcnow()
-            save_state(csv_hash="hash123", book_count=5)
-            after_save = datetime.utcnow()
+        with patch("sync.state.get_state_file", return_value=state_file):
+            before = datetime.utcnow()
+            save_state(csv_hash="hash123", book_count=5, account_name="test_account")
+            after = datetime.utcnow()
 
         with open(state_file) as f:
-            state = json.load(f)
+            data = json.load(f)
 
         # Parse timestamp
-        timestamp = datetime.fromisoformat(state["last_sync_timestamp"])
+        saved_time = datetime.fromisoformat(data["last_sync_timestamp"])
 
-        # Should be between before and after
-        assert before_save <= timestamp <= after_save
+        # Verify timestamp is between before and after
+        assert before <= saved_time <= after
 
 
 class TestShouldSkipUpload:
-    """Tests for upload skip logic."""
+    """Tests for skip upload logic."""
 
-    def test_should_skip_force_sync(self, tmp_path):
-        """Test force sync always returns False (never skip)."""
+    def test_should_skip_with_force_sync(self, tmp_path):
+        """Test force sync always uploads."""
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Title\nBook\n")
 
-        should_skip, reason = should_skip_upload(str(csv_file), force_sync=True)
+        should_skip, reason = should_skip_upload(str(csv_file), "test_account", force_sync=True)
 
         assert should_skip is False
         assert "Force sync" in reason
 
     def test_should_skip_no_previous_state(self, tmp_path):
-        """Test returns False when no previous state exists."""
+        """Test upload when no previous state exists."""
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Title\nBook\n")
-        state_file = tmp_path / "state.json"
 
-        with patch("sync.state.STATE_FILE", state_file):
-            should_skip, reason = should_skip_upload(str(csv_file))
+        state_file = tmp_path / "nonexistent.json"
+        with patch("sync.state.get_state_file", return_value=state_file):
+            should_skip, reason = should_skip_upload(str(csv_file), "test_account")
 
         assert should_skip is False
         assert "No previous state" in reason
 
     def test_should_skip_csv_unchanged(self, tmp_path):
-        """Test returns True when CSV hash matches previous state."""
+        """Test skip when CSV hasn't changed."""
         csv_file = tmp_path / "test.csv"
         csv_content = "Title,Author\nBook 1,Author 1\n"
         csv_file.write_text(csv_content)
@@ -242,7 +276,7 @@ class TestShouldSkipUpload:
         # Calculate hash
         csv_hash = calculate_csv_hash(str(csv_file))
 
-        # Create state file with matching hash
+        # Create state with same hash
         state_file = tmp_path / "state.json"
         state_data = {
             "last_hash": csv_hash,
@@ -251,53 +285,53 @@ class TestShouldSkipUpload:
         }
         state_file.write_text(json.dumps(state_data))
 
-        with patch("sync.state.STATE_FILE", state_file):
-            should_skip, reason = should_skip_upload(str(csv_file))
+        with patch("sync.state.get_state_file", return_value=state_file):
+            should_skip, reason = should_skip_upload(str(csv_file), "test_account")
 
         assert should_skip is True
-        assert "unchanged since" in reason
+        assert "unchanged" in reason
 
     def test_should_skip_csv_changed(self, tmp_path):
-        """Test returns False when CSV hash differs from previous state."""
+        """Test upload when CSV has changed."""
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Title\nBook 1\n")
 
-        # Create state file with different hash
+        # Create state with different hash
         state_file = tmp_path / "state.json"
         state_data = {
-            "last_hash": "different_hash_abc123",
+            "last_hash": "different_hash",
             "last_sync_timestamp": "2024-01-01T00:00:00",
             "last_book_count": 1
         }
         state_file.write_text(json.dumps(state_data))
 
-        with patch("sync.state.STATE_FILE", state_file):
-            should_skip, reason = should_skip_upload(str(csv_file))
+        with patch("sync.state.get_state_file", return_value=state_file):
+            should_skip, reason = should_skip_upload(str(csv_file), "test_account")
 
         assert should_skip is False
         assert "changed" in reason
 
     def test_should_skip_force_overrides_unchanged(self, tmp_path):
-        """Test force sync overrides unchanged CSV detection."""
+        """Test force sync overrides unchanged detection."""
         csv_file = tmp_path / "test.csv"
         csv_content = "Title\nBook\n"
         csv_file.write_text(csv_content)
 
-        # Create state with matching hash
         csv_hash = calculate_csv_hash(str(csv_file))
+
         state_file = tmp_path / "state.json"
         state_data = {
-            "last_hash": csv_hash,
+            "last_hash": csv_hash,  # Same hash
             "last_sync_timestamp": "2024-01-01T00:00:00",
             "last_book_count": 1
         }
         state_file.write_text(json.dumps(state_data))
 
-        with patch("sync.state.STATE_FILE", state_file):
-            # Without force - should skip
-            should_skip1, _ = should_skip_upload(str(csv_file), force_sync=False)
-            # With force - should not skip
-            should_skip2, _ = should_skip_upload(str(csv_file), force_sync=True)
+        with patch("sync.state.get_state_file", return_value=state_file):
+            # Without force: should skip
+            should_skip1, _ = should_skip_upload(str(csv_file), "test_account", force_sync=False)
+            # With force: should not skip
+            should_skip2, _ = should_skip_upload(str(csv_file), "test_account", force_sync=True)
 
         assert should_skip1 is True
         assert should_skip2 is False
@@ -307,74 +341,79 @@ class TestIntegration:
     """Integration tests for state management workflow."""
 
     def test_full_state_workflow(self, tmp_path):
-        """Test complete workflow: save, load, compare."""
-        state_file = tmp_path / "state.json"
+        """Test complete workflow: save, load, check."""
         csv_file = tmp_path / "library.csv"
-        csv_file.write_text("Title,Author\nBook 1,Author 1\n")
+        csv_content = "Title,Author\nBook 1,Author 1\n"
+        csv_file.write_text(csv_content)
 
-        with patch("sync.state.STATE_FILE", state_file):
-            # Calculate hash
+        state_file = tmp_path / "state.json"
+
+        with patch("sync.state.get_state_file", return_value=state_file):
+            # Calculate hash and save state
             csv_hash = calculate_csv_hash(str(csv_file))
+            save_state(csv_hash=csv_hash, book_count=1, account_name="test_account")
 
-            # Save state
-            save_state(csv_hash=csv_hash, book_count=1)
+            # Load state back
+            loaded_state = load_state("test_account")
 
-            # Load state
-            loaded_state = load_state()
             assert loaded_state is not None
             assert loaded_state["last_hash"] == csv_hash
             assert loaded_state["last_book_count"] == 1
 
-            # Should skip upload (unchanged)
-            should_skip, reason = should_skip_upload(str(csv_file))
+            # Check if upload should be skipped (it should, since CSV unchanged)
+            should_skip, reason = should_skip_upload(str(csv_file), "test_account")
+
             assert should_skip is True
 
-    def test_detect_library_changes(self, tmp_path):
-        """Test detection of library changes between syncs."""
-        state_file = tmp_path / "state.json"
+    def test_detect_library_change(self, tmp_path):
+        """Test detection of library changes."""
         csv_file = tmp_path / "library.csv"
+        state_file = tmp_path / "state.json"
 
-        with patch("sync.state.STATE_FILE", state_file):
-            # Initial sync
+        with patch("sync.state.get_state_file", return_value=state_file):
+            # Initial CSV and state
             csv_file.write_text("Title\nBook 1\n")
             hash1 = calculate_csv_hash(str(csv_file))
-            save_state(csv_hash=hash1, book_count=1)
+            save_state(csv_hash=hash1, book_count=1, account_name="test_account")
 
-            # Verify skip on unchanged
-            should_skip1, _ = should_skip_upload(str(csv_file))
+            # Verify upload would be skipped
+            should_skip1, _ = should_skip_upload(str(csv_file), "test_account")
             assert should_skip1 is True
 
-            # Modify library
+            # Modify CSV
             csv_file.write_text("Title\nBook 1\nBook 2\n")
+            hash2 = calculate_csv_hash(str(csv_file))
 
-            # Should detect change
-            should_skip2, reason = should_skip_upload(str(csv_file))
+            # Verify hashes are different
+            assert hash1 != hash2
+
+            # Verify upload would NOT be skipped
+            should_skip2, reason = should_skip_upload(str(csv_file), "test_account")
             assert should_skip2 is False
             assert "changed" in reason
 
             # Save new state
-            hash2 = calculate_csv_hash(str(csv_file))
-            save_state(csv_hash=hash2, book_count=2)
+            save_state(csv_hash=hash2, book_count=2, account_name="test_account")
 
-            # Now should skip again
-            should_skip3, _ = should_skip_upload(str(csv_file))
+            # Verify upload would now be skipped
+            should_skip3, _ = should_skip_upload(str(csv_file), "test_account")
             assert should_skip3 is True
 
     def test_state_persistence_across_runs(self, tmp_path):
         """Test state persists correctly across multiple runs."""
-        state_file = tmp_path / "state.json"
         csv_file = tmp_path / "library.csv"
-        csv_file.write_text("Title,Author\nBook,Author\n")
+        csv_file.write_text("Title\nBook\n")
+        state_file = tmp_path / "state.json"
 
-        with patch("sync.state.STATE_FILE", state_file):
-            # First run
+        with patch("sync.state.get_state_file", return_value=state_file):
+            # First run: save state
             hash1 = calculate_csv_hash(str(csv_file))
-            save_state(csv_hash=hash1, book_count=1)
+            save_state(csv_hash=hash1, book_count=1, account_name="test_account")
 
-            # Second run (simulated restart)
-            state = load_state()
+            # Simulate new run: load state
+            state = load_state("test_account")
             assert state["last_hash"] == hash1
 
-            # Third run (with same CSV)
-            should_skip, _ = should_skip_upload(str(csv_file))
+            # Check skip logic
+            should_skip, _ = should_skip_upload(str(csv_file), "test_account")
             assert should_skip is True
