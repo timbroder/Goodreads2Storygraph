@@ -1,1065 +1,950 @@
-# Phase 5: Integration & Deployment Testing Guide
+# Goodreads2Storygraph - Comprehensive Manual Test Plan
 
-## Overview
+**Date:** 2026-01-16
+**Environment:** Claude Code CLI
+**Python Version:** 3.14.2
+**Mode:** Primarily single-account with limited multi-account testing
 
-This document provides comprehensive testing procedures for Phase 5 of the Goodreads → StoryGraph sync service. These tests verify that the Docker container, cron scheduling, and data persistence all work correctly.
+---
 
 ## Prerequisites
 
-- Docker and Docker Compose installed
-- `.env` file created from `.env.example` with valid credentials
-- `data/` directory structure created (done automatically by entrypoint)
+### Required Environment Variables
 
----
+The following environment variables must be provided in a `.env` file:
 
-## Test 1: Cron Scheduling Inside Container
-
-### Purpose
-Verify that cron is properly configured and executes the sync job on schedule.
-
-### Steps
-
-#### 1.1 Build and Start Container
-
-```bash
-# Build the Docker image
-docker compose build
-
-# Start the container
-docker compose up -d
-
-# Verify container is running
-docker ps | grep goodreads-sync
 ```
+# Single Account Credentials
+GOODREADS_EMAIL=your-goodreads-email@example.com
+GOODREADS_PASSWORD=your-goodreads-password
+STORYGRAPH_EMAIL=your-storygraph-email@example.com
+STORYGRAPH_PASSWORD=your-storygraph-password
 
-**Expected Output:**
-- Container builds successfully without errors
-- Container is running with status "Up"
-
-#### 1.2 Verify Cron Installation
-
-```bash
-# Check that cron is running inside container
-docker exec goodreads2storygraph-sync ps aux | grep cron
-
-# View the installed crontab
-docker exec goodreads2storygraph-sync crontab -l
-```
-
-**Expected Output:**
-```
-SHELL=/bin/bash
-PATH=/usr/local/bin:/usr/bin:/bin
-GOODREADS_EMAIL=***
-GOODREADS_PASSWORD=***
-STORYGRAPH_EMAIL=***
-STORYGRAPH_PASSWORD=***
-HEADLESS=true
+# Optional Configuration
 LOG_LEVEL=INFO
-TZ=America/New_York
-
-0 3 * * * /app/sync_wrapper.sh
+DRY_RUN=false
+FORCE_SYNC=false
 ```
 
-#### 1.3 Test Manual Execution
-
-Before waiting for the scheduled run, test manual execution:
-
-```bash
-# Run sync manually to verify it works
-docker exec goodreads2storygraph-sync python -m sync.main
-
-# Check for errors
-echo $?
-```
-
-**Expected Output:**
-- Exit code 0 (success)
-- Log messages showing sync progress
-- CSV file created in `/data/artifacts/`
-
-#### 1.4 Test Cron Execution with Rapid Schedule
-
-To avoid waiting for the default 3 AM run, temporarily set a rapid schedule:
-
-```bash
-# Stop the container
-docker compose down
-
-# Edit .env to set a rapid schedule (every minute for testing)
-# Add or update: CRON_SCHEDULE=* * * * *
-
-# Restart container
-docker compose up -d
-
-# Watch the logs for cron execution
-docker logs -f goodreads2storygraph-sync
-```
-
-**Expected Output:**
-- Cron executes the sync job every minute
-- Each execution logs start and completion
-- Logs appear in both container output and `/data/logs/`
-
-#### 1.5 Verify Cron Environment Variables
-
-```bash
-# Check that environment variables are properly passed to cron
-docker exec goodreads2storygraph-sync sh -c 'crontab -l | grep -E "^(GOODREADS_|STORYGRAPH_|HEADLESS|LOG_LEVEL)"'
-```
-
-**Expected Output:**
-- All required environment variables are present in crontab
-- Values match those in `.env` file
-
-#### 1.6 Check Cron Logs
-
-```bash
-# View container logs to see cron execution
-docker logs --tail 50 goodreads2storygraph-sync
-
-# Check syslog for cron entries (if available)
-docker exec goodreads2storygraph-sync tail -f /var/log/syslog 2>/dev/null || echo "Syslog not available"
-```
-
-**Expected Output:**
-- Container logs show cron starting: "Starting cron daemon..."
-- Cron execution messages appear at scheduled times
+### Existing Test Data
+- Goodreads account has books in various shelves (currently-reading, read, to-read, possibly custom shelves)
+- One manual import has already been completed to StoryGraph
+- Test accounts are ready on both platforms
 
 ---
 
-## Test 2: Verify Artifacts and Logs in /data Volume
-
-### Purpose
-Ensure that all outputs (logs, CSVs, screenshots, state files) are properly persisted to the mounted `/data` volume.
-
-### Steps
-
-#### 2.1 Verify Directory Structure
-
-```bash
-# Check that all directories were created
-ls -R ./data/
-
-# Or use tree for better visualization
-tree ./data/
-```
-
-**Expected Structure:**
-```
-./data/
-├── logs/
-│   ├── sync.log                          # Main log file
-│   └── runs/
-│       └── YYYYMMDD_HHMMSS.log          # Per-run logs
-├── artifacts/
-│   ├── goodreads_export_YYYYMMDD_HHMMSS.csv
-│   ├── screenshots/
-│   │   └── YYYYMMDD_HHMMSS/
-│   │       └── *.png                     # Error screenshots
-│   └── html/
-│       └── YYYYMMDD_HHMMSS/
-│           └── *.html                    # Error page HTML
-└── state/
-    ├── playwright_storage_goodreads.json
-    ├── playwright_storage_storygraph.json
-    └── last_sync_state.json
-```
-
-#### 2.2 Verify Log Files
-
-```bash
-# Check main log file exists and has content
-cat ./data/logs/sync.log
-
-# Check per-run logs
-ls -lh ./data/logs/runs/
-
-# View latest run log
-cat ./data/logs/runs/$(ls -t ./data/logs/runs/ | head -1)
-```
-
-**Expected Output:**
-- Main log file contains timestamped entries
-- Per-run logs exist with timestamps in filename
-- Logs include: start time, sync steps, completion time, exit code
-
-#### 2.3 Verify Exported CSV
-
-```bash
-# List exported CSVs
-ls -lh ./data/artifacts/goodreads_export_*.csv
-
-# Check CSV has content
-head -20 ./data/artifacts/$(ls -t ./data/artifacts/goodreads_export_*.csv | head -1)
-
-# Count books in CSV
-tail -n +2 ./data/artifacts/$(ls -t ./data/artifacts/goodreads_export_*.csv | head -1) | wc -l
-```
-
-**Expected Output:**
-- CSV file exists with timestamp in filename
-- CSV has header row and book data
-- Book count matches your Goodreads library
-
-#### 2.4 Verify State Files
-
-```bash
-# Check state files exist
-ls -lh ./data/state/
-
-# View last sync state
-cat ./data/state/last_sync_state.json
-```
-
-**Expected Output:**
-```json
-{
-  "last_hash": "sha256_hash_of_csv",
-  "last_sync_timestamp": "2026-01-15T12:00:00Z",
-  "last_book_count": 123
-}
-```
-
-#### 2.5 Verify Session Persistence
-
-```bash
-# Check Playwright storage state files
-ls -lh ./data/state/playwright_storage_*.json
-
-# Verify they contain valid JSON
-cat ./data/state/playwright_storage_goodreads.json | python -m json.tool > /dev/null && echo "Valid JSON"
-cat ./data/state/playwright_storage_storygraph.json | python -m json.tool > /dev/null && echo "Valid JSON"
-```
-
-**Expected Output:**
-- Both storage state JSON files exist
-- Files are valid JSON
-- Files contain cookies and localStorage data
-
-#### 2.6 Test Data Persistence Across Restarts
-
-```bash
-# Note current file count
-echo "Before restart:"
-ls -R ./data/ | wc -l
-
-# Restart container
-docker compose restart
-
-# Check files still exist
-echo "After restart:"
-ls -R ./data/ | wc -l
-
-# Verify state file is still readable
-cat ./data/state/last_sync_state.json
-```
-
-**Expected Output:**
-- File count remains the same after restart
-- All data persists across container restart
-- State files are still valid
-
-#### 2.7 Test Skip Logic
-
-```bash
-# Run sync twice without library changes
-docker exec goodreads2storygraph-sync python -m sync.main
-sleep 5
-docker exec goodreads2storygraph-sync python -m sync.main
-
-# Check logs for skip message
-grep -i "skipping upload" ./data/logs/sync.log
-```
-
-**Expected Output:**
-- First run: CSV uploaded
-- Second run: "Library unchanged, skipping upload" message
-- State file shows same hash on both runs
-
-#### 2.8 Test Error Handling and Screenshots
-
-To test error handling (requires intentionally breaking something):
-
-```bash
-# Run with invalid credentials or network issues
-docker exec goodreads2storygraph-sync sh -c "GOODREADS_PASSWORD=wrong python -m sync.main" || true
-
-# Check for error screenshot
-ls -lh ./data/artifacts/screenshots/
-
-# Check for error HTML
-ls -lh ./data/artifacts/html/
-```
-
-**Expected Output:**
-- Error screenshots saved when failures occur
-- HTML snapshots captured for debugging
-- Detailed error messages in logs
-
----
-
-## Test 3: Integration Tests
-
-### Purpose
-Verify end-to-end functionality with various scenarios.
-
-### 3.1 Full Sync Flow
-
-```bash
-# Clean state to force full sync
-rm -f ./data/state/last_sync_state.json
-
-# Run sync
-docker exec goodreads2storygraph-sync python -m sync.main
-
-# Verify all steps completed
-tail -50 ./data/logs/sync.log
-```
-
-**Expected Output:**
-1. Login to Goodreads
-2. Export CSV
-3. Calculate hash
-4. Login to StoryGraph
-5. Upload CSV
-6. Verify success
-7. Save state
-
-### 3.2 Dry Run Mode
-
-```bash
-# Run in dry-run mode
-docker exec goodreads2storygraph-sync sh -c "DRY_RUN=true python -m sync.main"
-
-# Verify no upload occurred but export worked
-grep -i "dry run" ./data/logs/sync.log
-ls ./data/artifacts/goodreads_export_*.csv
-```
-
-**Expected Output:**
-- CSV exported
-- Upload skipped with "DRY_RUN mode" message
-- No changes to StoryGraph
-
-### 3.3 Force Full Sync
-
-```bash
-# Run normal sync
-docker exec goodreads2storygraph-sync python -m sync.main
-
-# Run with force flag (should upload even if unchanged)
-docker exec goodreads2storygraph-sync sh -c "FORCE_FULL_SYNC=true python -m sync.main"
-
-# Check logs
-grep -i "force" ./data/logs/sync.log
-```
-
-**Expected Output:**
-- Normal run: skips upload if unchanged
-- Force run: uploads even if unchanged
-
-### 3.4 Health Check
-
-```bash
-# Check container health status
-docker inspect goodreads2storygraph-sync | grep -A 10 Health
-
-# Manually run health check
-docker exec goodreads2storygraph-sync test -f /data/logs/sync.log && echo "Healthy" || echo "Unhealthy"
-```
-
-**Expected Output:**
-- Health status: "healthy"
-- Log file exists
-
----
-
-## Test 4: Cleanup and Maintenance
-
-### 4.1 Log Rotation
-
-```bash
-# Check old logs are cleaned up (30+ days)
-# Create test old log
-touch -d "40 days ago" ./data/logs/runs/old_test.log
-
-# Run cleanup (happens automatically in sync_wrapper.sh)
-docker exec goodreads2storygraph-sync /app/sync_wrapper.sh
-
-# Verify old log was deleted
-ls ./data/logs/runs/old_test.log 2>&1
-```
-
-**Expected Output:**
-- Old logs (30+ days) are automatically deleted
-
-### 4.2 Container Resource Usage
-
-```bash
-# Check memory and CPU usage
-docker stats goodreads2storygraph-sync --no-stream
-
-# Check disk usage
-docker exec goodreads2storygraph-sync du -sh /data/*
-```
-
-**Expected Output:**
-- Memory usage: 500MB-1GB during sync, ~200MB idle
-- CPU usage: Spike during sync, minimal idle
-- Disk usage reasonable and growing slowly
-
----
-
-## Test 5: Edge Cases and Error Scenarios
-
-### 5.1 Missing Environment Variables
-
-```bash
-# Start container without required env vars (should fail)
-docker run --rm -it \
-  -v $(pwd)/data:/data \
-  goodreads2storygraph-sync:latest
-
-# Should exit with error message
-```
-
-**Expected Output:**
-- Container exits immediately
-- Error: "GOODREADS_EMAIL and GOODREADS_PASSWORD must be set"
-
-### 5.2 Network Failures
-
-```bash
-# Disconnect network during sync
-docker network disconnect bridge goodreads2storygraph-sync || true
-docker exec goodreads2storygraph-sync python -m sync.main || true
-
-# Reconnect
-docker network connect bridge goodreads2storygraph-sync || true
-
-# Check error handling
-tail -50 ./data/logs/sync.log
-```
-
-**Expected Output:**
-- Error logged with details
-- Screenshot and HTML captured
-- Exit code non-zero
-
-### 5.3 Concurrent Execution Prevention
-
-```bash
-# Try running two syncs simultaneously
-docker exec goodreads2storygraph-sync python -m sync.main &
-docker exec goodreads2storygraph-sync python -m sync.main &
-wait
-
-# Check logs for conflicts
-grep -i "lock\|already running" ./data/logs/sync.log
-```
-
-**Expected Behavior:**
-- Should handle gracefully (may need lock mechanism)
-
----
-
-## Success Criteria
-
-All tests must pass for Phase 5 to be complete:
-
-- ✅ Cron executes on schedule
-- ✅ Logs written to `/data/logs/`
-- ✅ CSVs exported to `/data/artifacts/`
-- ✅ State persists in `/data/state/`
-- ✅ Session cookies reused across runs
-- ✅ Skip logic works (unchanged library)
-- ✅ Error screenshots captured
-- ✅ Container restarts without data loss
-- ✅ Health checks pass
-- ✅ Environment variables properly passed to cron
-
----
-
-## Troubleshooting
-
-### Cron Not Executing
-
-1. Check cron is running: `docker exec goodreads2storygraph-sync ps aux | grep cron`
-2. Verify crontab: `docker exec goodreads2storygraph-sync crontab -l`
-3. Check container logs: `docker logs goodreads2storygraph-sync`
-4. Verify timezone: `docker exec goodreads2storygraph-sync date`
-
-### Logs Not Appearing
-
-1. Check permissions: `ls -la ./data/logs/`
-2. Check volume mount: `docker inspect goodreads2storygraph-sync | grep Mounts -A 10`
-3. Run manual sync: `docker exec goodreads2storygraph-sync python -m sync.main`
-
-### State Not Persisting
-
-1. Verify state directory: `ls -la ./data/state/`
-2. Check file contents: `cat ./data/state/last_sync_state.json`
-3. Check for write errors: `docker logs goodreads2storygraph-sync | grep -i "state\|error"`
-
----
-
-## Test 6: Multi-Account Support (Phase 6)
-
-### Purpose
-Verify that the multi-account configuration works correctly, syncing multiple Goodreads → StoryGraph account pairs independently.
-
-### Prerequisites
-- Valid credentials for at least 2 different account pairs
-- Understanding of JSON configuration format
-- Docker container running
-
----
-
-### 6.1 Single-Account Backwards Compatibility Test
-
-**Purpose:** Verify that existing single-account .env configuration still works (backwards compatibility).
-
-```bash
-# Ensure no accounts.json exists
-docker exec goodreads-sync rm -f /data/config/accounts.json
-
-# Run sync with env vars only
-docker exec goodreads-sync python -m sync.main
-
-# Check logs for success
-docker exec goodreads-sync tail -n 50 /data/logs/sync.log
-```
-
-**Expected Output:**
-- Sync completes successfully using env vars
-- State file created: `/data/state/last_sync_state_default.json`
-- Artifacts created: `/data/artifacts/goodreads_export_default_*.csv`
-- Storage states: `/data/state/playwright_storage_*_default.json`
-- Log shows: "Accounts to sync: 1"
+## Test Environment Setup
+
+### TS-001: Create Virtual Environment
+**Objective:** Set up isolated Python environment
+
+**Steps:**
+1. Navigate to project root: `cd /home/user/Goodreads2Storygraph`
+2. Create venv: `python3.14 -m venv venv`
+3. Activate venv: `source venv/bin/activate`
+4. Verify activation: `which python` should show venv path
+
+**Expected Outcome:**
+- Virtual environment created successfully
+- Python executable points to venv
+- Prompt shows `(venv)` prefix
 
 **Success Criteria:**
-- ✅ Single-account mode works without accounts.json
-- ✅ Files use "default" as account name
-- ✅ No errors in logs
+- ✅ `venv/` directory exists
+- ✅ `which python` returns `*/venv/bin/python`
+- ✅ `python --version` shows `Python 3.14.2`
 
 ---
 
-### 6.2 Multi-Account Configuration Test
+### TS-002: Install Dependencies
+**Objective:** Install all required packages
 
-**Purpose:** Verify multi-account JSON configuration loads correctly.
+**Steps:**
+1. Check for requirements file: `ls requirements*.txt`
+2. Install dependencies: `pip install -r requirements.txt` (or appropriate file)
+3. Install Playwright browsers: `playwright install`
+4. Verify installations: `pip list`
 
-#### Step 1: Create Multi-Account Configuration
-
-```bash
-# Create config directory
-docker exec goodreads-sync mkdir -p /data/config
-
-# Copy example to container
-docker cp accounts.example.json goodreads-sync:/data/config/accounts.json
-
-# Edit with real credentials (on host)
-# Option 1: Edit directly on host if you mounted /data/config
-nano data/config/accounts.json
-
-# Option 2: Edit inside container
-docker exec -it goodreads-sync vi /data/config/accounts.json
-```
-
-**Example accounts.json with 2 accounts:**
-```json
-{
-  "accounts": [
-    {
-      "name": "my_account",
-      "goodreads_email": "your-email@example.com",
-      "goodreads_password": "your-password",
-      "storygraph_email": "your-email@example.com",
-      "storygraph_password": "your-password"
-    },
-    {
-      "name": "friend1",
-      "goodreads_email": "friend@example.com",
-      "goodreads_password": "friend-password",
-      "storygraph_email": "friend@example.com",
-      "storygraph_password": "friend-password"
-    }
-  ]
-}
-```
-
-#### Step 2: Verify Configuration Loading
-
-```bash
-# Run sync
-docker exec goodreads-sync python -m sync.main
-
-# Check that both accounts were detected
-docker exec goodreads-sync grep "Accounts to sync" /data/logs/sync.log | tail -1
-```
-
-**Expected Output:**
-```
-Accounts to sync: 2
-```
+**Expected Outcome:**
+- All packages installed without errors
+- Playwright chromium browser downloaded
+- Key packages visible: playwright, python-dotenv, etc.
 
 **Success Criteria:**
-- ✅ Config file loads without errors
-- ✅ Correct number of accounts detected
-- ✅ No validation errors
+- ✅ No installation errors
+- ✅ `playwright` package present in `pip list`
+- ✅ Playwright browsers installed successfully
 
 ---
 
-### 6.3 Per-Account State Isolation Test
+### TS-003: Create Directory Structure
+**Objective:** Set up required data directories
 
-**Purpose:** Verify that each account maintains independent state and sync history.
+**Steps:**
+1. Create base directories:
+   ```bash
+   mkdir -p data/logs/runs
+   mkdir -p data/artifacts
+   mkdir -p data/state
+   mkdir -p data/config
+   ```
+2. Verify structure: `tree data/` or `find data/ -type d`
+3. Check permissions: `ls -la data/`
 
-```bash
-# List state files
-docker exec goodreads-sync ls -la /data/state/
-
-# View state for account 1
-docker exec goodreads-sync cat /data/state/last_sync_state_my_account.json
-
-# View state for account 2
-docker exec goodreads-sync cat /data/state/last_sync_state_friend1.json
-```
-
-**Expected Output:**
-- Separate state files for each account:
-  - `/data/state/last_sync_state_my_account.json`
-  - `/data/state/last_sync_state_friend1.json`
-- Separate storage states for each account:
-  - `/data/state/playwright_storage_goodreads_my_account.json`
-  - `/data/state/playwright_storage_goodreads_friend1.json`
-  - `/data/state/playwright_storage_storygraph_my_account.json`
-  - `/data/state/playwright_storage_storygraph_friend1.json`
-
-**Sample State File:**
-```json
-{
-  "last_hash": "abc123def456...",
-  "last_sync_timestamp": "2026-01-16T12:00:00",
-  "last_book_count": 150,
-  "account_name": "my_account"
-}
-```
+**Expected Outcome:**
+- All directories created successfully
+- Proper read/write permissions set
+- Directory structure matches expected layout
 
 **Success Criteria:**
-- ✅ Each account has its own state file
-- ✅ State files contain correct account_name
-- ✅ Each account has separate browser storage states
-- ✅ Hash and timestamps are independent per account
+- ✅ `data/logs/runs/` exists
+- ✅ `data/artifacts/` exists
+- ✅ `data/state/` exists
+- ✅ `data/config/` exists
+- ✅ All directories writable
 
 ---
 
-### 6.4 Per-Account Artifact Test
+### TS-004: Verify Environment Configuration
+**Objective:** Ensure .env file is properly configured
 
-**Purpose:** Verify that export artifacts are tagged with account names.
+**Steps:**
+1. Verify .env exists: `ls -la .env`
+2. Check file is not committed: `git status .env` (should be ignored)
+3. Validate structure (do not display credentials): `grep -E "^[A-Z_]+=" .env | wc -l`
+4. Prompt user to confirm all required credentials are set
 
-```bash
-# List artifacts
-docker exec goodreads-sync ls -la /data/artifacts/
-
-# Check for account-tagged files
-docker exec goodreads-sync ls /data/artifacts/ | grep goodreads_export
-```
-
-**Expected Output:**
-```
-goodreads_export_my_account_20260116_120000.csv
-goodreads_export_friend1_20260116_120015.csv
-```
+**Expected Outcome:**
+- .env file exists and is gitignored
+- Contains all required variables
+- User confirms credentials are correct
 
 **Success Criteria:**
-- ✅ CSV files are tagged with account names
-- ✅ Timestamps differentiate simultaneous exports
-- ✅ Each account's exports are clearly identifiable
+- ✅ `.env` file exists
+- ✅ File not tracked by git
+- ✅ All required variables present
+- ✅ User confirms credentials are valid
 
 ---
 
-### 6.5 Independent Sync Verification Test
+## CLI Discovery Tests
 
-**Purpose:** Verify each account syncs independently without interference.
+### TC-001: Discover Available Commands
+**Objective:** Identify all CLI commands and options
 
-```bash
-# Run full sync
-docker exec goodreads-sync python -m sync.main
+**Steps:**
+1. Run help command: `python -m sync.main --help`
+2. Document all available flags and options
+3. Check for config file options: look for account selection, dry-run, force, etc.
+4. Identify entry points and modules
 
-# Check logs for both accounts
-docker exec goodreads-sync grep "\[my_account\]" /data/logs/sync.log | tail -20
-docker exec goodreads-sync grep "\[friend1\]" /data/logs/sync.log | tail -20
-
-# Verify summary shows both accounts
-docker exec goodreads-sync grep -A 10 "SYNC SUMMARY" /data/logs/sync.log | tail -15
-```
-
-**Expected Log Output:**
-```
-============================================================
-[my_account] Starting sync
-============================================================
-[my_account] STEP 1: Export from Goodreads
-[my_account] Login successful
-[my_account] Export complete: /data/artifacts/goodreads_export_my_account_*.csv
-[my_account] STEP 2: Validate CSV
-[my_account] CSV validated: 150 books found
-[my_account] STEP 3: Check if upload needed
-[my_account] Upload needed: CSV has changed
-[my_account] STEP 4: Upload to StoryGraph
-[my_account] Upload complete
-[my_account] Sync complete
-============================================================
-[friend1] Starting sync
-============================================================
-[friend1] STEP 1: Export from Goodreads
-...
-```
-
-**Expected Summary:**
-```
-============================================================
-SYNC SUMMARY
-============================================================
-Total accounts: 2
-Successful: 2
-  ✓ my_account
-  ✓ friend1
-Failed: 0
-============================================================
-```
+**Expected Outcome:**
+- Help text displays all available commands
+- Command-line flags documented
+- Clear usage instructions shown
 
 **Success Criteria:**
-- ✅ Both accounts process sequentially
-- ✅ Logs clearly identify which account is being synced
-- ✅ Summary shows success/failure per account
-- ✅ Each account completes all 5 steps
+- ✅ Help command executes successfully
+- ✅ Available options documented
+- ✅ Usage examples provided (if any)
 
 ---
 
-### 6.6 Error Isolation Test
+### TC-002: Validate CLI Arguments
+**Objective:** Test CLI argument parsing
 
-**Purpose:** Verify that one account failing doesn't stop other accounts from syncing.
+**Steps:**
+1. Test invalid flag: `python -m sync.main --invalid-flag`
+2. Test help variations: `-h`, `--help`
+3. Test version (if available): `--version`
+4. Document argument behavior
 
-#### Step 1: Introduce Intentional Failure
-
-Edit `/data/config/accounts.json` to add an account with invalid credentials:
-
-```json
-{
-  "accounts": [
-    {
-      "name": "my_account",
-      "goodreads_email": "your-valid-email@example.com",
-      "goodreads_password": "valid-password",
-      "storygraph_email": "your-valid-email@example.com",
-      "storygraph_password": "valid-password"
-    },
-    {
-      "name": "invalid_account",
-      "goodreads_email": "invalid@example.com",
-      "goodreads_password": "wrong-password",
-      "storygraph_email": "invalid@example.com",
-      "storygraph_password": "wrong-password"
-    },
-    {
-      "name": "friend1",
-      "goodreads_email": "friend-valid@example.com",
-      "goodreads_password": "friend-valid-password",
-      "storygraph_email": "friend-valid@example.com",
-      "storygraph_password": "friend-valid-password"
-    }
-  ]
-}
-```
-
-#### Step 2: Run Sync and Verify Error Isolation
-
-```bash
-# Run sync
-docker exec goodreads-sync python -m sync.main
-
-# Check exit code (should be 1 due to failure)
-echo $?
-
-# Check summary
-docker exec goodreads-sync grep -A 15 "SYNC SUMMARY" /data/logs/sync.log | tail -20
-```
-
-**Expected Output:**
-```
-============================================================
-SYNC SUMMARY
-============================================================
-Total accounts: 3
-Successful: 2
-  ✓ my_account
-  ✓ friend1
-Failed: 1
-  ✗ invalid_account
-============================================================
-```
-
-**Expected Behavior:**
-- Exit code: 1 (failure detected)
-- Valid accounts complete successfully
-- Invalid account fails with error message
-- Other accounts unaffected by the failure
+**Expected Outcome:**
+- Invalid flags produce helpful error messages
+- Help flags work correctly
+- CLI provides clear feedback
 
 **Success Criteria:**
-- ✅ Valid accounts sync successfully despite other failures
-- ✅ Failed account clearly identified in summary
-- ✅ Error logged but doesn't crash entire process
-- ✅ Exit code reflects that at least one account failed
+- ✅ Invalid flags handled gracefully
+- ✅ Error messages are clear and actionable
+- ✅ Help system works properly
 
 ---
 
-### 6.7 Configuration Validation Test
+## Happy Path Tests (Single Account)
 
-**Purpose:** Verify that configuration validation catches common errors.
+### TC-003: Initial Clean Sync
+**Objective:** Perform first full sync with clean state
 
-#### Test 1: Empty Accounts Array
+**Steps:**
+1. Clear any existing state: `rm -rf data/state/*`
+2. Clear artifacts: `rm -rf data/artifacts/*`
+3. Run sync: `python -m sync.main`
+4. Monitor console output for progress
+5. Check for screenshots in appropriate directory
+6. Wait for completion
 
-```json
-{
-  "accounts": []
-}
-```
-
-**Expected:** Error message: "No accounts configured"
-
-#### Test 2: Duplicate Account Names
-
-```json
-{
-  "accounts": [
-    {
-      "name": "my_account",
-      "goodreads_email": "email1@example.com",
-      "goodreads_password": "pass1",
-      "storygraph_email": "email1@example.com",
-      "storygraph_password": "pass1"
-    },
-    {
-      "name": "my_account",
-      "goodreads_email": "email2@example.com",
-      "goodreads_password": "pass2",
-      "storygraph_email": "email2@example.com",
-      "storygraph_password": "pass2"
-    }
-  ]
-}
-```
-
-**Expected:** Error message: "Duplicate account names found: my_account"
-
-#### Test 3: Missing Required Fields
-
-```json
-{
-  "accounts": [
-    {
-      "name": "test_account",
-      "goodreads_email": "email@example.com"
-    }
-  ]
-}
-```
-
-**Expected:** Error message: "Account 'test_account' missing required fields"
-
-#### Test 4: Invalid Account Name
-
-```json
-{
-  "accounts": [
-    {
-      "name": "my account with spaces!",
-      "goodreads_email": "email@example.com",
-      "goodreads_password": "pass",
-      "storygraph_email": "email@example.com",
-      "storygraph_password": "pass"
-    }
-  ]
-}
-```
-
-**Expected:** Error message: "Account name must contain only alphanumeric characters and underscores"
+**Expected Outcome:**
+- Automated Goodreads export begins
+- CSV file downloaded successfully
+- Playwright navigates to StoryGraph
+- Upload process completes
+- Success message displayed
+- Process exits with code 0
 
 **Success Criteria:**
-- ✅ All validation errors caught before sync starts
-- ✅ Clear error messages for each validation failure
-- ✅ No crashes or undefined behavior
+- ✅ Goodreads CSV exported to `data/artifacts/goodreads_export_*.csv`
+- ✅ Log files created in `data/logs/runs/`
+- ✅ State file created in `data/state/`
+- ✅ No errors or warnings in logs (except expected ones)
+- ✅ Screenshots captured during automation
+- ✅ Exit code = 0
+- ✅ User confirms books visible in StoryGraph web UI
+
+**Verification Steps:**
+1. Check artifacts: `ls -lh data/artifacts/`
+2. Examine latest log: `tail -50 data/logs/runs/*.log`
+3. Verify state file: `cat data/state/*.json` (check structure)
+4. Count exported books: `wc -l data/artifacts/goodreads_export_*.csv`
+5. User manually verifies StoryGraph website shows synced books
 
 ---
 
-### 6.8 Logging Test
+### TC-004: Incremental Sync (No Changes)
+**Objective:** Test state tracking when nothing has changed
 
-**Purpose:** Verify that multi-account logging clearly identifies which account is being processed.
+**Steps:**
+1. Keep existing state from TC-003
+2. Run sync again: `python -m sync.main`
+3. Monitor for "no changes detected" logic
 
-```bash
-# Run sync
-docker exec goodreads-sync python -m sync.main
-
-# Extract account-specific logs
-docker exec goodreads-sync grep -E "\[(my_account|friend1)\]" /data/logs/sync.log | tail -50
-
-# Check log structure
-docker exec goodreads-sync ls -la /data/logs/runs/
-```
-
-**Expected Output:**
-- All log entries prefixed with `[account_name]`
-- Clear separation between account operations
-- Single run log file contains all accounts
-- Rotating logs work correctly
+**Expected Outcome:**
+- Tool detects no changes since last sync
+- Minimal processing performed
+- State preserved
+- Exits successfully with appropriate message
 
 **Success Criteria:**
-- ✅ Account name clearly visible in every log entry
-- ✅ Easy to filter logs by account
-- ✅ No log entry ambiguity about which account is active
-- ✅ Per-run logs include all accounts
+- ✅ "No changes" or similar message in output
+- ✅ No new export/upload performed (or minimal processing)
+- ✅ State file timestamp/content appropriate
+- ✅ Exit code = 0
+- ✅ Logs indicate no-op or minimal work
 
 ---
 
-### 6.9 Skip Logic Per-Account Test
+### TC-005: Incremental Sync (With Changes)
+**Objective:** Test delta sync functionality
 
-**Purpose:** Verify that skip logic works independently for each account.
+**Steps:**
+1. Prompt user to make a change in Goodreads (mark book as read, add to currently-reading, etc.)
+2. User confirms change made
+3. Run sync: `python -m sync.main`
+4. Verify only delta is processed
 
-#### Step 1: Initial Sync
-
-```bash
-# Run first sync for both accounts
-docker exec goodreads-sync python -m sync.main
-
-# Verify state saved for both
-docker exec goodreads-sync ls /data/state/last_sync_state_*.json
-```
-
-#### Step 2: Run Again Without Changes
-
-```bash
-# Immediately run again (no changes to libraries)
-docker exec goodreads-sync python -m sync.main
-
-# Check logs for skip messages
-docker exec goodreads-sync grep "Skipping upload" /data/logs/sync.log | tail -5
-```
-
-**Expected Output:**
-```
-[my_account] Skipping upload: CSV unchanged since 2026-01-16T12:00:00
-[friend1] Skipping upload: CSV unchanged since 2026-01-16T12:00:05
-```
-
-#### Step 3: Force Sync One Account
-
-```bash
-# Modify state for one account to trigger upload
-docker exec goodreads-sync rm /data/state/last_sync_state_my_account.json
-
-# Run sync again
-docker exec goodreads-sync python -m sync.main
-
-# Verify one uploaded, one skipped
-docker exec goodreads-sync grep -E "(Upload needed|Skipping upload)" /data/logs/sync.log | tail -5
-```
-
-**Expected Output:**
-```
-[my_account] Upload needed: No previous state found
-[friend1] Skipping upload: CSV unchanged since 2026-01-16T12:00:05
-```
+**Expected Outcome:**
+- Tool detects changes
+- Exports updated data
+- Syncs changes to StoryGraph
+- State updated to reflect new sync
 
 **Success Criteria:**
-- ✅ Each account's skip logic is independent
-- ✅ Changing one account's state doesn't affect others
-- ✅ Skip/upload decisions made per-account
-- ✅ Logs clearly show reasoning for each account
+- ✅ Change detected in logs
+- ✅ New export file created with updated data
+- ✅ Upload completes successfully
+- ✅ State file updated
+- ✅ User confirms change visible in StoryGraph
+- ✅ Exit code = 0
 
 ---
 
-### 6.10 Cron Multi-Account Test
+## CLI Options Testing
 
-**Purpose:** Verify that cron executes multi-account sync correctly on schedule.
+### TC-006: Dry Run Mode
+**Objective:** Test dry-run functionality
 
-```bash
-# Set rapid schedule for testing
-docker compose down
-# Edit .env: CRON_SCHEDULE=*/2 * * * *
-docker compose up -d
+**Steps:**
+1. Run with dry-run flag: `python -m sync.main --dry-run` (or equivalent)
+2. Monitor output for dry-run indicators
+3. Check that no actual changes occur
 
-# Wait 3-4 minutes and check logs
-sleep 240
-docker logs goodreads-sync | tail -100
-
-# Verify both accounts synced
-docker exec goodreads-sync grep "Total accounts:" /data/logs/sync.log | tail -5
-```
-
-**Expected Output:**
-- Cron executes sync every 2 minutes
-- Both accounts processed in each run
-- Summary shows correct account count
-- No cron-specific errors
+**Expected Outcome:**
+- Tool simulates sync process
+- No actual upload to StoryGraph
+- State not modified (or marked as dry-run)
+- Clear indication this was a dry run
 
 **Success Criteria:**
-- ✅ Cron runs multi-account sync correctly
-- ✅ All accounts processed on schedule
-- ✅ No permission or environment issues
-- ✅ Logs captured correctly for cron runs
+- ✅ Dry-run mode activated (shown in output)
+- ✅ Export may occur, but no upload happens
+- ✅ State unchanged or clearly marked as dry-run
+- ✅ Logs indicate dry-run mode
+- ✅ User confirms no changes in StoryGraph
+- ✅ Exit code = 0
 
 ---
 
-## Multi-Account Test Summary
+### TC-007: Force Sync Mode
+**Objective:** Test force sync bypassing state checks
 
-After completing all multi-account tests, verify:
+**Steps:**
+1. With existing state from previous tests
+2. Run with force flag: `python -m sync.main --force` (or equivalent)
+3. Verify state checks bypassed
 
-- ✅ **Configuration**: JSON loads correctly, validates properly
-- ✅ **State Isolation**: Each account has independent state
-- ✅ **Artifacts**: Files tagged with account names
-- ✅ **Independent Sync**: Accounts don't interfere with each other
-- ✅ **Error Isolation**: One failure doesn't stop others
-- ✅ **Logging**: Clear account identification in logs
-- ✅ **Skip Logic**: Works independently per account
-- ✅ **Backwards Compatibility**: Single-account mode still works
-- ✅ **Cron Integration**: Multi-account works with scheduled runs
-- ✅ **Validation**: Catches configuration errors
+**Expected Outcome:**
+- Tool ignores existing state
+- Performs full sync regardless of changes
+- New export and upload executed
+- State updated/overwritten
 
----
-
-## Restoring Default Schedule
-
-After rapid testing, restore the normal schedule:
-
-```bash
-# Stop container
-docker compose down
-
-# Edit .env to restore default schedule
-# CRON_SCHEDULE=0 3 * * *
-
-# Restart
-docker compose up -d
-```
+**Success Criteria:**
+- ✅ Force mode indicated in output
+- ✅ Full sync performed despite no changes
+- ✅ New artifacts created
+- ✅ State updated
+- ✅ Exit code = 0
 
 ---
 
-## Conclusion
+### TC-008: Verbose Logging
+**Objective:** Test verbose/debug logging modes
 
-Once all tests pass (Phase 5 and Phase 6), the service is ready for production use with full multi-account support. Document any issues found and ensure they are resolved before finalizing.
+**Steps:**
+1. Run with verbose flag: `python -m sync.main --verbose` or `--debug` (if available)
+2. Or set `LOG_LEVEL=DEBUG` in .env and run
+3. Examine output for increased detail
 
-### Phase 5 Completion Checklist
-- ✅ Cron scheduling works correctly
-- ✅ Artifacts and logs persist in /data volume
-- ✅ State management works as expected
-- ✅ All environment variables properly passed
+**Expected Outcome:**
+- Detailed debug logs displayed
+- More granular progress information
+- Internal state and decisions logged
 
-### Phase 6 Completion Checklist
-- ✅ Multi-account configuration loads correctly
-- ✅ Per-account state isolation verified
-- ✅ Error isolation between accounts works
-- ✅ Backwards compatibility maintained
-- ✅ Logging clearly identifies accounts
-- ✅ Configuration validation catches errors
-- ✅ Cron integration with multi-account verified
+**Success Criteria:**
+- ✅ Debug/verbose output visible
+- ✅ More detailed than normal run
+- ✅ Useful for troubleshooting
+- ✅ Sync still completes successfully
+
+---
+
+### TC-009: All CLI Options Combined
+**Objective:** Test combining multiple flags
+
+**Steps:**
+1. Identify compatible flag combinations
+2. Run with multiple flags: e.g., `python -m sync.main --dry-run --verbose --force`
+3. Verify flags work together correctly
+
+**Expected Outcome:**
+- Multiple flags respected simultaneously
+- No conflicts or errors
+- Behavior combines as expected
+
+**Success Criteria:**
+- ✅ All specified flags active
+- ✅ Combined behavior logical
+- ✅ No flag conflicts
+- ✅ Exit code = 0
+
+---
+
+## State Management Tests
+
+### TC-010: Clean State Full Sync
+**Objective:** Verify behavior with no prior state
+
+**Steps:**
+1. Delete all state: `rm -rf data/state/*`
+2. Keep artifacts intact
+3. Run sync: `python -m sync.main`
+
+**Expected Outcome:**
+- Tool treats as initial sync
+- Full export and upload performed
+- New state file created
+
+**Success Criteria:**
+- ✅ Full sync performed
+- ✅ New state file created
+- ✅ Complete export generated
+- ✅ Exit code = 0
+
+---
+
+### TC-011: Corrupted State Handling
+**Objective:** Test recovery from invalid state file
+
+**Steps:**
+1. Manually corrupt state file: `echo "invalid json" > data/state/*.json`
+2. Run sync: `python -m sync.main`
+3. Observe error handling
+
+**Expected Outcome:**
+- Tool detects invalid state
+- Either recovers gracefully (treats as clean slate) or exits with clear error
+- User prompted or automatic recovery attempted
+
+**Success Criteria:**
+- ✅ Corruption detected
+- ✅ Clear error message OR automatic recovery
+- ✅ Sync can proceed (with or without state)
+- ✅ Exit code appropriate (0 if recovered, non-zero if failed)
+
+---
+
+### TC-012: State File Permissions
+**Objective:** Test behavior when state file not writable
+
+**Steps:**
+1. Make state directory read-only: `chmod 444 data/state/`
+2. Run sync: `python -m sync.main`
+3. Observe error handling
+
+**Expected Outcome:**
+- Tool detects write permission issue
+- Clear error message displayed
+- Graceful exit without corruption
+
+**Success Criteria:**
+- ✅ Permission error detected
+- ✅ Clear, actionable error message
+- ✅ No partial writes or corruption
+- ✅ Non-zero exit code
+- ✅ Restore permissions: `chmod 755 data/state/`
+
+---
+
+## Error Scenario Tests
+
+### TC-013: Missing Export File
+**Objective:** Handle missing or deleted export file
+
+**Steps:**
+1. Run sync and let export complete
+2. During upload phase (or before), delete export CSV
+3. Observe handling (or test by skipping export somehow)
+
+**Alternative:** Test recovery if export step fails
+- Simulate export failure if possible
+
+**Expected Outcome:**
+- Tool detects missing file
+- Clear error message
+- Graceful exit
+
+**Success Criteria:**
+- ✅ Missing file detected
+- ✅ Error message indicates missing export
+- ✅ Non-zero exit code
+- ✅ No corruption or partial state
+
+---
+
+### TC-014: Network Interruption Simulation
+**Objective:** Handle network issues during automation
+
+**Note:** This may be difficult to simulate; can be skipped if not feasible
+
+**Steps:**
+1. If possible, simulate network issues (disconnect WiFi briefly during upload)
+2. Or modify code to add artificial timeout
+3. Observe error handling and retry logic
+
+**Expected Outcome:**
+- Tool detects network issue
+- Retries or fails gracefully
+- Clear error message
+
+**Success Criteria:**
+- ✅ Network error detected
+- ✅ Appropriate error message
+- ✅ Non-zero exit code or successful retry
+- ✅ No corrupted state
+
+---
+
+### TC-015: Disk Space Exhaustion
+**Objective:** Handle insufficient disk space
+
+**Note:** May skip if too difficult to simulate safely
+
+**Steps:**
+1. Check available space: `df -h`
+2. If safe, create large file to fill disk near capacity
+3. Run sync and observe behavior
+
+**Expected Outcome:**
+- Tool detects write failure
+- Clear error about disk space
+- Graceful exit
+
+**Success Criteria:**
+- ✅ Write error detected
+- ✅ Clear error message
+- ✅ Non-zero exit code
+- ✅ No partial/corrupted files
+
+---
+
+## Data Validation Tests
+
+### TC-016: CSV Export Validation
+**Objective:** Verify export CSV structure and content
+
+**Steps:**
+1. Run sync: `python -m sync.main`
+2. Examine CSV: `head -20 data/artifacts/goodreads_export_*.csv`
+3. Check structure:
+   - Verify headers present
+   - Validate required columns (Title, Author, ISBN, etc.)
+   - Check for special characters handling
+   - Verify row count matches expected
+
+**Expected Outcome:**
+- CSV properly formatted
+- All expected columns present
+- Data integrity maintained
+- Special characters escaped properly
+
+**Success Criteria:**
+- ✅ Valid CSV structure
+- ✅ Headers match Goodreads export format
+- ✅ All books present in export
+- ✅ No truncated or corrupted data
+- ✅ Character encoding correct (UTF-8)
+
+---
+
+### TC-017: State File Validation
+**Objective:** Verify state file structure and data
+
+**Steps:**
+1. After successful sync, examine state: `cat data/state/*.json | jq .`
+2. Validate structure:
+   - Last sync timestamp
+   - Book count or hash
+   - Account info (if stored)
+   - Any other tracked metadata
+
+**Expected Outcome:**
+- Valid JSON structure
+- Appropriate metadata stored
+- Timestamps accurate
+- Data matches expectations
+
+**Success Criteria:**
+- ✅ Valid JSON (parseable)
+- ✅ Contains expected fields
+- ✅ Timestamps reasonable
+- ✅ Data consistent with actual sync
+
+---
+
+### TC-018: Log File Analysis
+**Objective:** Comprehensive log review
+
+**Steps:**
+1. Run complete sync: `python -m sync.main`
+2. Analyze logs: `cat data/logs/runs/*.log`
+3. Check for:
+   - Proper log levels (INFO, WARNING, ERROR)
+   - Timestamps on each entry
+   - Clear progress indicators
+   - Any unexpected warnings
+   - Error handling traces (if any errors occurred)
+4. Verify log rotation (if multiple runs)
+
+**Expected Outcome:**
+- Clean, readable logs
+- Appropriate log levels
+- Complete trace of operations
+- No unexpected errors
+
+**Success Criteria:**
+- ✅ Logs properly formatted
+- ✅ Timestamps present
+- ✅ Log levels appropriate
+- ✅ No ERROR entries (except in error tests)
+- ✅ Progress clearly documented
+- ✅ Sensitive data not logged (passwords, etc.)
+
+---
+
+### TC-019: Screenshot Validation
+**Objective:** Verify Playwright screenshots captured
+
+**Steps:**
+1. After sync with screenshots, locate screenshot directory
+2. View screenshots: `ls -lh <screenshot-dir>/`
+3. Open and examine key screenshots:
+   - Goodreads login/export page
+   - StoryGraph upload page
+   - Confirmation/success page
+
+**Expected Outcome:**
+- Screenshots captured at key steps
+- Images clear and viewable
+- Proper naming/organization
+- Sufficient for debugging
+
+**Success Criteria:**
+- ✅ Screenshots exist
+- ✅ Files are valid images (can be opened)
+- ✅ Show expected pages/states
+- ✅ Useful for verification and debugging
+
+---
+
+## Edge Cases and Special Scenarios
+
+### TC-020: Large Library Sync
+**Objective:** Test with current library size
+
+**Steps:**
+1. Count books in Goodreads: prompt user
+2. Run sync: `python -m sync.main`
+3. Monitor performance and memory usage: `time python -m sync.main`
+4. Verify all books synced
+
+**Expected Outcome:**
+- Sync completes successfully regardless of library size
+- Reasonable performance
+- All books processed
+
+**Success Criteria:**
+- ✅ Sync completes without timeout
+- ✅ Memory usage reasonable
+- ✅ All books in export CSV
+- ✅ User confirms all books in StoryGraph
+- ✅ Exit code = 0
+
+---
+
+### TC-021: Special Characters in Book Data
+**Objective:** Verify handling of special characters
+
+**Steps:**
+1. Review current library for books with special characters:
+   - Non-ASCII characters (accents, umlauts, etc.)
+   - Quotes and apostrophes in titles
+   - Ampersands, colons, etc.
+2. Run sync: `python -m sync.main`
+3. Verify these books sync correctly
+4. User checks specific books in StoryGraph
+
+**Expected Outcome:**
+- Special characters preserved
+- No encoding errors
+- Books display correctly in StoryGraph
+
+**Success Criteria:**
+- ✅ No encoding errors in logs
+- ✅ Special characters in CSV correct
+- ✅ User confirms books display properly in StoryGraph
+- ✅ Exit code = 0
+
+---
+
+### TC-022: Books on Custom Shelves
+**Objective:** Test handling of custom shelves
+
+**Steps:**
+1. Prompt user if they have custom shelves
+2. If yes, identify which books are on custom shelves
+3. Run sync: `python -m sync.main`
+4. Verify custom shelf books included
+5. User checks these books in StoryGraph
+
+**Expected Outcome:**
+- Custom shelf books included in export
+- Proper shelf mapping (if applicable)
+- All books synced
+
+**Success Criteria:**
+- ✅ Custom shelves recognized
+- ✅ Books from custom shelves in export
+- ✅ User confirms books in StoryGraph
+- ✅ Exit code = 0
+
+---
+
+### TC-023: Books with Missing Data
+**Objective:** Handle books with incomplete metadata
+
+**Steps:**
+1. Identify books with missing data (no ISBN, no author, etc.)
+2. Run sync: `python -m sync.main`
+3. Verify these books handled gracefully
+
+**Expected Outcome:**
+- Books with missing data included
+- No sync failures due to missing fields
+- Appropriate handling/warnings logged
+
+**Success Criteria:**
+- ✅ Books with missing data in export
+- ✅ No crashes or errors
+- ✅ Appropriate warnings in logs (if any)
+- ✅ User confirms books in StoryGraph
+- ✅ Exit code = 0
+
+---
+
+### TC-024: Repeated Syncs Idempotency
+**Objective:** Verify multiple syncs don't cause issues
+
+**Steps:**
+1. Run sync 3 times in succession:
+   ```bash
+   python -m sync.main
+   python -m sync.main
+   python -m sync.main
+   ```
+2. Verify each behaves correctly
+3. Check for state accumulation issues
+4. User verifies no duplication in StoryGraph
+
+**Expected Outcome:**
+- First sync processes fully
+- Subsequent syncs detect no changes
+- No duplication or state corruption
+- StoryGraph shows books only once
+
+**Success Criteria:**
+- ✅ First sync succeeds
+- ✅ Subsequent syncs are no-ops or minimal
+- ✅ State consistent across runs
+- ✅ No duplicates in StoryGraph (user confirms)
+- ✅ Exit code = 0 for all
+
+---
+
+## Multi-Account Tests (Limited)
+
+### TC-025: Multi-Account Setup
+**Objective:** Configure multi-account mode
+
+**Steps:**
+1. Create accounts config: `cp accounts.example.json data/config/accounts.json`
+2. Prompt user to edit with their credentials (if they have multiple accounts)
+3. Validate JSON structure: `cat data/config/accounts.json | jq .`
+4. Verify at least 2 accounts configured
+
+**Expected Outcome:**
+- Config file created
+- Valid JSON structure
+- Multiple accounts configured
+
+**Success Criteria:**
+- ✅ `data/config/accounts.json` exists
+- ✅ Valid JSON
+- ✅ At least 2 accounts present
+- ✅ Required fields for each account
+
+---
+
+### TC-026: Multi-Account Sync (All Accounts)
+**Objective:** Sync all configured accounts
+
+**Steps:**
+1. Clear all state: `rm -rf data/state/*`
+2. Run multi-account sync: `python -m sync.main --accounts` (or however it's invoked)
+3. Monitor output for each account
+4. Verify separate state/artifacts per account
+
+**Expected Outcome:**
+- Each account synced in sequence
+- Separate state files maintained
+- All accounts succeed
+
+**Success Criteria:**
+- ✅ All accounts processed
+- ✅ Separate state/artifacts per account
+- ✅ User confirms syncs for all accounts in respective StoryGraph accounts
+- ✅ Exit code = 0
+
+---
+
+### TC-027: Multi-Account Sync (Single Account)
+**Objective:** Sync one specific account from config
+
+**Steps:**
+1. Run with account selector: `python -m sync.main --account my_account` (or equivalent)
+2. Verify only specified account synced
+
+**Expected Outcome:**
+- Only specified account processed
+- Other accounts untouched
+- Correct credentials used
+
+**Success Criteria:**
+- ✅ Only specified account synced
+- ✅ Correct state/artifacts created
+- ✅ User confirms correct StoryGraph account updated
+- ✅ Exit code = 0
+
+---
+
+## Post-Testing Validation
+
+### TC-028: Complete System Verification
+**Objective:** Final end-to-end verification
+
+**Steps:**
+1. User manually reviews StoryGraph library
+2. Compare with Goodreads library
+3. Spot-check various books, shelves, ratings
+4. Verify sync date/metadata
+
+**Expected Outcome:**
+- Complete sync confirmed
+- All data accurate
+- No obvious missing books
+- System working as expected
+
+**Success Criteria:**
+- ✅ User confirms library matches Goodreads
+- ✅ All shelves represented
+- ✅ Ratings and reviews (if synced) correct
+- ✅ Overall system functioning properly
+
+---
+
+### TC-029: Cleanup and Documentation
+**Objective:** Clean up test artifacts and document results
+
+**Steps:**
+1. Review all logs for any warnings or issues
+2. Document any anomalies found
+3. Optionally clean up test data: `rm -rf data/`
+4. Deactivate venv: `deactivate`
+
+**Expected Outcome:**
+- Test results documented
+- System in clean state
+- Any issues noted for fixing
+
+**Success Criteria:**
+- ✅ All test results documented
+- ✅ Issues tracked (if any)
+- ✅ System ready for production use
+
+---
+
+## Summary Checklist
+
+### Required Pre-Test Setup
+- [ ] Python 3.14.2 installed
+- [ ] `.env` file configured with valid credentials
+- [ ] Test accounts prepared on Goodreads and StoryGraph
+- [ ] Goodreads account has books in various shelves
+
+### Environment Setup (TS-001 to TS-004)
+- [ ] Virtual environment created and activated
+- [ ] Dependencies installed (pip packages)
+- [ ] Playwright browsers installed
+- [ ] Directory structure created
+- [ ] Environment variables verified
+
+### CLI Discovery (TC-001 to TC-002)
+- [ ] Help command tested
+- [ ] Available options documented
+- [ ] Argument parsing validated
+
+### Happy Path Tests (TC-003 to TC-005)
+- [ ] Initial clean sync successful
+- [ ] Incremental sync (no changes) works
+- [ ] Incremental sync (with changes) works
+
+### CLI Options (TC-006 to TC-009)
+- [ ] Dry-run mode tested
+- [ ] Force sync mode tested
+- [ ] Verbose logging tested
+- [ ] Combined options tested
+
+### State Management (TC-010 to TC-012)
+- [ ] Clean state sync tested
+- [ ] Corrupted state handling verified
+- [ ] Permission errors handled
+
+### Error Scenarios (TC-013 to TC-015)
+- [ ] Missing export file handled
+- [ ] Network interruption handled (if tested)
+- [ ] Disk space handled (if tested)
+
+### Data Validation (TC-016 to TC-019)
+- [ ] CSV export validated
+- [ ] State file validated
+- [ ] Log files analyzed
+- [ ] Screenshots verified
+
+### Edge Cases (TC-020 to TC-024)
+- [ ] Large library sync successful
+- [ ] Special characters handled
+- [ ] Custom shelves tested
+- [ ] Missing data handled
+- [ ] Repeated syncs are idempotent
+
+### Multi-Account (TC-025 to TC-027)
+- [ ] Multi-account config setup
+- [ ] All accounts sync tested
+- [ ] Single account selector tested
+
+### Final Validation (TC-028 to TC-029)
+- [ ] Complete system verification
+- [ ] Cleanup and documentation
+
+---
+
+## Test Execution Notes
+
+### Execution Sequence
+Tests should be executed in order as listed, since some tests depend on state from previous tests.
+
+### Failure Handling
+If any test fails, STOP immediately and investigate/fix the issue before proceeding.
+
+### User Involvement
+User will be prompted to:
+- Confirm manual changes in Goodreads (TC-005)
+- Verify sync results in StoryGraph browser (multiple tests)
+- Provide library size information (TC-020)
+- Check specific books with special scenarios (TC-021 to TC-023)
+- Final verification of complete sync (TC-028)
+
+### Test Duration
+Estimated total time: 2-4 hours depending on:
+- Library size
+- Network speed
+- Number of errors encountered
+- Multi-account testing scope
+
+---
+
+## Success Criteria Summary
+
+The test plan is considered successful when:
+
+1. ✅ All setup tests pass (TS-001 to TS-004)
+2. ✅ All happy path tests pass (TC-003 to TC-005)
+3. ✅ All CLI options work as expected (TC-006 to TC-009)
+4. ✅ State management works correctly (TC-010 to TC-012)
+5. ✅ Error scenarios handled gracefully (TC-013 to TC-015)
+6. ✅ Data validation confirms integrity (TC-016 to TC-019)
+7. ✅ Edge cases handled properly (TC-020 to TC-024)
+8. ✅ Basic multi-account functionality works (TC-025 to TC-027)
+9. ✅ User confirms complete and accurate sync in StoryGraph
+10. ✅ No critical issues or data loss observed
+
+---
+
+## Notes and Observations
+
+(Space for recording observations, issues, or notes during testing)
+
+-
+-
+-
+
+**End of Test Plan**
