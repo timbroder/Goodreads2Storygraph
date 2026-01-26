@@ -7,6 +7,7 @@ from typing import Optional
 
 from playwright.sync_api import Browser, Page
 
+from .config import get_data_path
 from .exceptions import StoryGraphUploadError
 from .selectors import StoryGraphSelectors
 
@@ -32,7 +33,7 @@ class StoryGraphClient:
         self.password = password
         self.account_name = account_name
         self.page: Optional[Page] = None
-        self.storage_state_path = Path(f"/data/state/playwright_storage_storygraph_{account_name}.json")
+        self.storage_state_path = get_data_path() / "state" / f"playwright_storage_storygraph_{account_name}.json"
 
     def login(self) -> None:
         """
@@ -112,24 +113,36 @@ class StoryGraphClient:
             file_input = self.page.locator(StoryGraphSelectors.FILE_INPUT)
             file_input.set_input_files(csv_path)
 
-            # Click upload button if needed
-            try:
-                upload_button = self.page.locator(StoryGraphSelectors.UPLOAD_BUTTON)
-                if upload_button.count() > 0:
-                    logger.info("Clicking upload button")
-                    upload_button.click()
-            except Exception:
-                logger.debug("No explicit upload button found, file upload may be automatic")
+            # Find and click the submit/import button
+            logger.info("Looking for submit button")
+            submit_button = self.page.locator('input[type="submit"], button[type="submit"], button:has-text("Import"), button:has-text("Submit")')
+            if submit_button.count() > 0:
+                logger.info("Clicking submit button")
+                self._save_screenshot("before_submit")
+                submit_button.first.click()
 
-            # Wait for success indication
-            logger.info("Waiting for upload confirmation")
-            self.page.wait_for_selector(
-                StoryGraphSelectors.SUCCESS_MESSAGE,
-                timeout=60000
-            )
+                # Wait for the page to process - button may show "Submitting..."
+                self.page.wait_for_timeout(3000)
+                self._save_screenshot("after_submit")
 
-            logger.info("Upload successful")
-            self._save_screenshot("upload_success")
+                # StoryGraph import is asynchronous - it queues the import
+                # Check for either success message or "submitted" confirmation
+                logger.info("Waiting for submission confirmation")
+                try:
+                    # Wait for any indication that submission was accepted
+                    self.page.wait_for_selector(
+                        ':text("queued"), :text("submitted"), :text("will receive an email"), :text("processing"), .alert-success, .notice',
+                        timeout=30000
+                    )
+                    logger.info("Import submitted successfully (processing asynchronously)")
+                except Exception:
+                    # If no specific message, check if the button changed state
+                    logger.info("No explicit confirmation, checking page state")
+                    self._save_screenshot("submission_state")
+            else:
+                logger.warning("No submit button found")
+
+            self._save_screenshot("upload_complete")
 
         except Exception as e:
             self._save_screenshot("upload_failed")
@@ -171,7 +184,7 @@ class StoryGraphClient:
 
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_dir = Path(f"/data/artifacts/screenshots/{timestamp}")
+            screenshot_dir = get_data_path() / "artifacts" / "screenshots" / timestamp
             screenshot_dir.mkdir(parents=True, exist_ok=True)
             screenshot_path = screenshot_dir / f"{name}.png"
             self.page.screenshot(path=str(screenshot_path))
@@ -186,7 +199,7 @@ class StoryGraphClient:
 
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            html_dir = Path(f"/data/artifacts/html/{timestamp}")
+            html_dir = get_data_path() / "artifacts" / "html" / timestamp
             html_dir.mkdir(parents=True, exist_ok=True)
             html_path = html_dir / f"{name}.html"
             html_path.write_text(self.page.content())

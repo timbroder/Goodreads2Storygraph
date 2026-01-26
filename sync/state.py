@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .config import get_data_path
 from .exceptions import StateError
 
 
@@ -19,7 +20,7 @@ def get_state_file(account_name: str) -> Path:
     Returns:
         Path to account's state file
     """
-    return Path(f"/data/state/last_sync_state_{account_name}.json")
+    return get_data_path() / "state" / f"last_sync_state_{account_name}.json"
 
 
 def calculate_csv_hash(filepath: str) -> str:

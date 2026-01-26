@@ -10,6 +10,19 @@ from dotenv import load_dotenv
 from .exceptions import SyncError
 
 
+def get_data_path() -> Path:
+    """
+    Get the base data directory path.
+
+    Uses DATA_PATH env var if set, otherwise defaults to /data (for Docker).
+    For local development, set DATA_PATH=./data in .env.
+
+    Returns:
+        Path to data directory
+    """
+    return Path(os.getenv("DATA_PATH", "/data"))
+
+
 class AccountConfig:
     """Configuration for a single account pair."""
 
@@ -99,6 +112,7 @@ class Config:
         dry_run: bool = False,
         force_sync: bool = False,
         max_sync_items: Optional[int] = None,
+        enrich_isbns: bool = False,
     ):
         """
         Initialize configuration.
@@ -110,6 +124,7 @@ class Config:
             dry_run: Export but don't upload
             force_sync: Force upload even if unchanged
             max_sync_items: Maximum items to sync (for testing)
+            enrich_isbns: Look up missing ISBNs before upload
         """
         self.accounts = accounts
         self.headless = headless
@@ -117,6 +132,7 @@ class Config:
         self.dry_run = dry_run
         self.force_sync = force_sync
         self.max_sync_items = max_sync_items
+        self.enrich_isbns = enrich_isbns
 
     def validate(self) -> None:
         """
@@ -222,7 +238,7 @@ def load_config() -> Config:
         load_dotenv(env_path)
 
     # Try multi-account mode first
-    accounts_file = Path("/data/config/accounts.json")
+    accounts_file = get_data_path() / "config" / "accounts.json"
     if accounts_file.exists():
         accounts = load_accounts_from_json(accounts_file)
     else:
@@ -237,6 +253,7 @@ def load_config() -> Config:
         dry_run=os.getenv("DRY_RUN", "false").lower() == "true",
         force_sync=os.getenv("FORCE_FULL_SYNC", "false").lower() == "true",
         max_sync_items=int(os.getenv("MAX_SYNC_ITEMS")) if os.getenv("MAX_SYNC_ITEMS") else None,
+        enrich_isbns=os.getenv("ENRICH_ISBNS", "false").lower() == "true",
     )
 
     config.validate()

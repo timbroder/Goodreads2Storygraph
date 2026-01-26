@@ -6,6 +6,8 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from .config import get_data_path
+
 
 def setup_logging(log_level: str = "INFO") -> tuple[logging.Logger, str]:
     """
@@ -18,7 +20,7 @@ def setup_logging(log_level: str = "INFO") -> tuple[logging.Logger, str]:
         Tuple of (logger, run_log_path)
     """
     # Create log directories
-    log_dir = Path("/data/logs")
+    log_dir = get_data_path() / "logs"
     runs_dir = log_dir / "runs"
     log_dir.mkdir(parents=True, exist_ok=True)
     runs_dir.mkdir(parents=True, exist_ok=True)
