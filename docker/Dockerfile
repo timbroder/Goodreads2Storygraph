@@ -4,13 +4,14 @@ FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 WORKDIR /app
 
 # Install system dependencies
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     cron \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
-COPY ../requirements.txt /app/requirements.txt
+COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers (chromium only to keep image size down)
@@ -23,22 +24,21 @@ RUN mkdir -p /data/logs/runs \
     /data/state
 
 # Copy application code
-COPY ../sync /app/sync
+COPY sync /app/sync
 
 # Copy Docker-specific files
-COPY entrypoint.sh /app/entrypoint.sh
-COPY crontab /app/crontab.template
-COPY sync_wrapper.sh /app/sync_wrapper.sh
+COPY docker/entrypoint.sh /app/entrypoint.sh
+COPY docker/crontab /app/crontab.template
+COPY docker/sync_wrapper.sh /app/sync_wrapper.sh
 
 # Make scripts executable
 RUN chmod +x /app/entrypoint.sh /app/sync_wrapper.sh
 
-# Create non-root user for running the application
-RUN useradd -m -u 1000 syncuser && \
-    chown -R syncuser:syncuser /app /data
+# Fix permissions for existing pwuser (UID 1000 in playwright image)
+RUN chown -R pwuser:pwuser /app /data
 
-# Switch to non-root user
-USER syncuser
+# Switch to non-root user (pwuser exists in playwright base image)
+USER pwuser
 
 # Set environment defaults
 ENV HEADLESS=true \

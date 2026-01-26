@@ -7,6 +7,7 @@ from playwright.sync_api import Browser, sync_playwright
 from .config import AccountConfig, Config, load_config
 from .exceptions import GoodreadsExportError, StateError, StoryGraphUploadError, SyncError
 from .goodreads import GoodreadsClient
+from .isbn_lookup import enrich_csv_with_isbns
 from .logging_setup import setup_logging
 from .state import calculate_csv_hash, load_state, save_state, should_skip_upload
 from .storygraph import StoryGraphClient
@@ -68,6 +69,18 @@ def sync_account(account: AccountConfig, config: Config, browser: Browser, logge
         validate_csv(csv_path)
         book_count = count_books(csv_path)
         logger.info(f"{account_prefix} CSV validated: {book_count} books found")
+
+        # Step 2b: Enrich ISBNs if enabled
+        if config.enrich_isbns:
+            logger.info("-" * 60)
+            logger.info(f"{account_prefix} STEP 2b: Enrich missing ISBNs")
+            logger.info("-" * 60)
+            books_without_isbn, isbns_found, cache_hits = enrich_csv_with_isbns(csv_path)
+            if books_without_isbn > 0:
+                logger.info(f"{account_prefix} Books without ISBN: {books_without_isbn}")
+                logger.info(f"{account_prefix} ISBNs found: {isbns_found} ({cache_hits} from cache)")
+            else:
+                logger.info(f"{account_prefix} All books already have ISBNs")
 
         # Apply MAX_SYNC_ITEMS limit if set
         if config.max_sync_items:
@@ -170,6 +183,9 @@ def main() -> int:
 
         if config.force_sync:
             logger.info("FORCE SYNC MODE - Will upload even if unchanged")
+
+        if config.enrich_isbns:
+            logger.info("ISBN ENRICHMENT - Will look up missing ISBNs via API")
 
         # Initialize Playwright
         logger.info("Initializing browser")
