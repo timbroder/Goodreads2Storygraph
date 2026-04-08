@@ -38,3 +38,39 @@ class StoryGraphSelectors:
 
     # Verification
     LOGGED_IN_INDICATOR = '.user-menu, .profile-link, [data-user-menu]'
+
+    # Search / Browse
+    BROWSE_URL = "https://app.thestorygraph.com/browse"
+    SEARCH_RESULTS_BOOK_PANE = ".book-pane"
+    BOOK_PANE_DATA_ID = "data-book-id"
+    BOOK_TITLE_LINK = ".book-title-author-and-series a"
+
+    # Book page base URL (append UUID)
+    BOOK_PAGE_URL = "https://app.thestorygraph.com/books"
+
+    # Shelf buttons (used on both search results and book detail pages)
+    SHELF_TO_READ_BUTTON = 'form.button_to button:has-text("to read")'
+    SHELF_READ_BUTTON = 'form.button_to button:text-is("read")'
+    SHELF_CURRENTLY_READING_BUTTON = 'form.button_to button:has-text("currently reading")'
+    SHELF_DID_NOT_FINISH_BUTTON = 'form.button_to button:has-text("did not finish")'
+    SHELF_DROPDOWN_TOGGLE = '.book-pane button[type="button"]:near(button:has-text("read"))'
+
+    # Review page: /reviews/new?book_id={uuid}
+    REVIEW_URL = "https://app.thestorygraph.com/reviews/new"
+    RATING_INTEGER_SELECT = "select#stars_integer"
+    RATING_DECIMAL_SELECT = "select#stars_decimal"
+    REVIEW_EDITOR = "[contenteditable=true]"
+    REVIEW_SUBMIT = 'button:has-text("Add Review")'
+
+    # Read history page: /read_instances/new?book_id={uuid}
+    READ_INSTANCES_URL = "https://app.thestorygraph.com/read_instances/new"
+    READ_FINISH_DAY = 'select[name="new_read_instance[finish_day]"]'
+    READ_FINISH_MONTH = 'select[name="new_read_instance[finish_month]"]'
+    READ_FINISH_YEAR = 'select[name="new_read_instance[finish_year]"]'
+    READ_START_DAY = 'select[name="new_read_instance[start_day]"]'
+    READ_START_MONTH = 'select[name="new_read_instance[start_month]"]'
+    READ_START_YEAR = 'select[name="new_read_instance[start_year]"]'
+    READ_HISTORY_SUBMIT = 'button:has-text("Save"), input[type="submit"]'
+
+    # Confirmation messages
+    BOOK_ON_SHELF_INDICATOR = 'text="Finished", text="Started", text="read"'

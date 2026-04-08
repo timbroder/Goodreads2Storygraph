@@ -99,6 +99,10 @@ class Config:
         dry_run: bool = False,
         force_sync: bool = False,
         max_sync_items: Optional[int] = None,
+        sync_delay_min: float = 3.0,
+        sync_delay_max: float = 8.0,
+        max_retries: int = 3,
+        retry_failed_books: bool = True,
     ):
         """
         Initialize configuration.
@@ -117,6 +121,10 @@ class Config:
         self.dry_run = dry_run
         self.force_sync = force_sync
         self.max_sync_items = max_sync_items
+        self.sync_delay_min = sync_delay_min
+        self.sync_delay_max = sync_delay_max
+        self.max_retries = max_retries
+        self.retry_failed_books = retry_failed_books
 
     def validate(self) -> None:
         """
@@ -237,6 +245,10 @@ def load_config() -> Config:
         dry_run=os.getenv("DRY_RUN", "false").lower() == "true",
         force_sync=os.getenv("FORCE_FULL_SYNC", "false").lower() == "true",
         max_sync_items=int(os.getenv("MAX_SYNC_ITEMS")) if os.getenv("MAX_SYNC_ITEMS") else None,
+        sync_delay_min=float(os.getenv("SYNC_DELAY_MIN", "3.0")),
+        sync_delay_max=float(os.getenv("SYNC_DELAY_MAX", "8.0")),
+        max_retries=int(os.getenv("MAX_RETRIES", "3")),
+        retry_failed_books=os.getenv("RETRY_FAILED_BOOKS", "true").lower() == "true",
     )
 
     config.validate()

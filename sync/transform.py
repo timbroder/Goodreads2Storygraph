@@ -2,8 +2,10 @@
 
 import csv
 from pathlib import Path
+from typing import Dict
 
 from .exceptions import GoodreadsExportError
+from .models import BookRecord
 from .state import calculate_csv_hash
 
 
@@ -78,3 +80,35 @@ def count_books(filepath: str) -> int:
         return count
     except Exception as e:
         raise GoodreadsExportError(f"Failed to count books: {e}")
+
+
+def parse_csv_to_books(filepath: str) -> Dict[str, BookRecord]:
+    """
+    Parse a Goodreads CSV export into BookRecord objects keyed by Book Id.
+
+    Args:
+        filepath: Path to the Goodreads CSV file
+
+    Returns:
+        Dictionary mapping Book Id to BookRecord
+
+    Raises:
+        GoodreadsExportError: If parsing fails
+    """
+    path = Path(filepath)
+    if not path.exists():
+        raise GoodreadsExportError(f"CSV file not found: {filepath}")
+
+    try:
+        books = {}
+        with open(filepath, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                book = BookRecord.from_csv_row(row)
+                if book.book_id:
+                    books[book.book_id] = book
+        return books
+    except csv.Error as e:
+        raise GoodreadsExportError(f"Failed to parse CSV: {e}")
+    except Exception as e:
+        raise GoodreadsExportError(f"Failed to parse CSV: {e}")
