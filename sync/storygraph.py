@@ -62,6 +62,14 @@ class StoryGraphClient:
 
             self.page.click(StoryGraphSelectors.LOGIN_SUBMIT_BUTTON)
             self.page.wait_for_load_state("networkidle")
+            # Wait for redirect after login — "Signing in..." can take a moment
+            self.page.wait_for_timeout(3000)
+            # Wait for the URL to change away from sign_in page
+            try:
+                self.page.wait_for_url("**/sign_in**", timeout=1000)
+            except Exception:
+                pass  # Good — URL changed, meaning we redirected away from login
+            self.page.wait_for_load_state("networkidle")
 
             if not self._is_logged_in():
                 self._save_screenshot("login_failed")
