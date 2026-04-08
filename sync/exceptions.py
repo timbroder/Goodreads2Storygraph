@@ -24,3 +24,13 @@ class StateError(SyncError):
 class PlaywrightError(SyncError):
     """Browser automation failures."""
     pass
+
+
+class BookNotFoundError(StoryGraphUploadError):
+    """Book could not be found on StoryGraph via ISBN or title+author search."""
+    pass
+
+
+class BookSyncError(StoryGraphUploadError):
+    """Failed to set metadata (shelf, rating, dates, review) for a book."""
+    pass

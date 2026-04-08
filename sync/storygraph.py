@@ -1,14 +1,19 @@
-"""StoryGraph client for uploading library data."""
+"""StoryGraph client for syncing individual books via browser automation."""
 
 import logging
+import random
+import re
+import time
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from playwright.sync_api import Browser, Page
 
-from .config import get_data_path
-from .exceptions import StoryGraphUploadError
+from .exceptions import BookNotFoundError, BookSyncError, StoryGraphUploadError
+from .models import BookRecord
+from .paths import artifacts_dir, state_dir
 from .selectors import StoryGraphSelectors
 
 
@@ -16,40 +21,23 @@ logger = logging.getLogger("sync.storygraph")
 
 
 class StoryGraphClient:
-    """Client for automating StoryGraph CSV import."""
+    """Client for automating StoryGraph book operations."""
 
     def __init__(self, browser: Browser, email: str, password: str, account_name: str = "default"):
-        """
-        Initialize StoryGraph client.
-
-        Args:
-            browser: Playwright browser instance
-            email: StoryGraph login email
-            password: StoryGraph login password
-            account_name: Unique account identifier for state isolation
-        """
         self.browser = browser
         self.email = email
         self.password = password
         self.account_name = account_name
         self.page: Optional[Page] = None
-        self.storage_state_path = get_data_path() / "state" / f"playwright_storage_storygraph_{account_name}.json"
+        self.storage_state_path = state_dir() / f"playwright_storage_storygraph_{account_name}.json"
 
     def login(self) -> None:
-        """
-        Login to StoryGraph using stored session or credentials.
-
-        Raises:
-            StoryGraphUploadError: If login fails
-        """
+        """Login to StoryGraph using stored session or credentials."""
         try:
-            # Try to use stored session first
             if self.storage_state_path.exists():
                 logger.info("Using stored StoryGraph session")
                 context = self.browser.new_context(storage_state=str(self.storage_state_path))
                 self.page = context.new_page()
-
-                # Verify session is still valid
                 self.page.goto("https://app.thestorygraph.com/")
                 self.page.wait_for_timeout(2000)
 
@@ -61,7 +49,6 @@ class StoryGraphClient:
                 self.page.close()
                 context.close()
 
-            # Fresh login
             context = self.browser.new_context()
             self.page = context.new_page()
 
@@ -69,16 +56,13 @@ class StoryGraphClient:
             self.page.goto(StoryGraphSelectors.LOGIN_URL)
             self.page.wait_for_load_state("networkidle")
 
-            # Fill login form
             logger.info("Entering credentials")
             self.page.fill(StoryGraphSelectors.LOGIN_EMAIL_INPUT, self.email)
             self.page.fill(StoryGraphSelectors.LOGIN_PASSWORD_INPUT, self.password)
 
-            # Submit form
             self.page.click(StoryGraphSelectors.LOGIN_SUBMIT_BUTTON)
             self.page.wait_for_load_state("networkidle")
 
-            # Verify login success
             if not self._is_logged_in():
                 self._save_screenshot("login_failed")
                 raise StoryGraphUploadError("Login verification failed")
@@ -86,30 +70,26 @@ class StoryGraphClient:
             logger.info("Login successful")
             self._save_storage_state()
 
+        except StoryGraphUploadError:
+            raise
         except Exception as e:
             self._save_screenshot("login_error")
             raise StoryGraphUploadError(f"Login failed: {e}")
 
     def upload_csv(self, csv_path: str) -> None:
-        """
-        Upload CSV file to StoryGraph and verify success.
-
-        Args:
-            csv_path: Path to the CSV file to upload
-
-        Raises:
-            StoryGraphUploadError: If upload fails
-        """
+        """Upload CSV file to StoryGraph (deprecated — use add_book instead)."""
+        warnings.warn(
+            "upload_csv is deprecated. StoryGraph CSV import is broken. Use add_book() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not self.page:
             raise StoryGraphUploadError("Not logged in")
 
         try:
-            logger.info("Navigating to import page")
             self.page.goto(StoryGraphSelectors.IMPORT_URL)
             self.page.wait_for_load_state("networkidle")
 
-            # Upload file
-            logger.info(f"Uploading CSV: {csv_path}")
             file_input = self.page.locator(StoryGraphSelectors.FILE_INPUT)
             file_input.set_input_files(csv_path)
 
@@ -149,6 +129,348 @@ class StoryGraphClient:
             self._save_html("upload_failed")
             raise StoryGraphUploadError(f"Upload failed: {e}")
 
+    def find_book(self, book: BookRecord) -> Optional[str]:
+        """
+        Search for a book on StoryGraph and return its UUID.
+
+        Tries ISBN search first, falls back to title+author.
+
+        Returns:
+            StoryGraph book UUID, or None if not found.
+        """
+        if not self.page:
+            raise StoryGraphUploadError("Not logged in")
+
+        # Try ISBN search first
+        isbn = book.search_isbn()
+        if isbn:
+            uuid = self._search_for_book(isbn)
+            if uuid:
+                return uuid
+            logger.debug(f"ISBN search returned no results for '{book.title}', trying title+author")
+
+        # Fall back to title + author search
+        search_term = f"{book.title} {book.author}"
+        uuid = self._search_for_book(search_term)
+        if uuid:
+            return uuid
+
+        return None
+
+    def _search_for_book(self, search_term: str) -> Optional[str]:
+        """Execute a search on StoryGraph and return the first result's UUID."""
+        url = f"{StoryGraphSelectors.BROWSE_URL}?search_term={search_term}"
+        self.page.goto(url)
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_timeout(1000)  # Extra wait for Turbo rendering
+
+        book_panes = self.page.locator(StoryGraphSelectors.SEARCH_RESULTS_BOOK_PANE)
+        if book_panes.count() == 0:
+            return None
+
+        # Get the first result's UUID
+        first_pane = book_panes.first
+        uuid = first_pane.get_attribute(StoryGraphSelectors.BOOK_PANE_DATA_ID)
+        return uuid
+
+    def add_book(self, book: BookRecord) -> bool:
+        """
+        Add or update a single book on StoryGraph with full metadata.
+
+        Args:
+            book: BookRecord with the book's metadata
+
+        Returns:
+            True if successful
+
+        Raises:
+            BookNotFoundError: If book cannot be found on StoryGraph
+            BookSyncError: If metadata operations fail
+        """
+        if not self.page:
+            raise StoryGraphUploadError("Not logged in")
+
+        logger.info(f"Syncing: {book.title} by {book.author}")
+
+        # Step 1: Find the book
+        uuid = self.find_book(book)
+        if not uuid:
+            raise BookNotFoundError(
+                f"Could not find '{book.title}' by {book.author} on StoryGraph"
+            )
+        logger.debug(f"Found book UUID: {uuid}")
+
+        try:
+            # Step 2: Set shelf (this also adds the book to library if not already there)
+            self._set_shelf(uuid, book.storygraph_shelf())
+
+            # Step 3: Set rating (if non-zero)
+            if book.my_rating > 0:
+                self._set_rating(uuid, book.my_rating)
+
+            # Step 4: Set read dates (if available and shelf is "read")
+            if book.date_read and book.exclusive_shelf == "read":
+                self._set_dates(uuid, book.date_read)
+
+            # Step 5: Set review (if non-empty)
+            if book.my_review:
+                self._set_review(uuid, book.my_review, book.my_rating)
+
+            logger.info(f"Successfully synced: {book.title}")
+            return True
+
+        except BookSyncError:
+            raise
+        except Exception as e:
+            self._save_screenshot(f"sync_failed_{uuid[:8]}")
+            raise BookSyncError(f"Failed to sync '{book.title}': {e}")
+
+    def _set_shelf(self, uuid: str, shelf: str) -> None:
+        """Navigate to book page and set the shelf.
+
+        StoryGraph DOM structure for shelf controls:
+        - Status button: button.read-status-label (text = current shelf name)
+        - Chevron: button:has-text("Expand dropdown menu") inside div.dropdown
+        - Dropdown options: button:text-is("read"), button:text-is("to read"), etc.
+        - For books not in library: button "Add to your To-Read Pile" with similar dropdown
+        """
+        book_url = f"{StoryGraphSelectors.BOOK_PAGE_URL}/{uuid}"
+        self.page.goto(book_url)
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_timeout(1000)
+
+        target = shelf  # "read", "to read", "currently reading", "did not finish"
+
+        # Check if already on the correct shelf via the status label button
+        status_btn = self.page.locator("button.read-status-label").first
+        try:
+            if status_btn.count() > 0:
+                current_shelf = status_btn.text_content().strip().lower()
+                if current_shelf == target:
+                    logger.debug(f"Book already on shelf: {shelf}")
+                    return
+        except Exception:
+            pass
+
+        # Case 1: Book is already in library (has status label + dropdown)
+        if status_btn.count() > 0:
+            try:
+                # Shortcut: "Mark as finished" for read shelf
+                if shelf == "read":
+                    finished_btn = self.page.locator('button:has-text("Mark as finished"), button.mark-as-finished-btn').first
+                    if finished_btn.count() > 0 and finished_btn.is_visible():
+                        finished_btn.click()
+                        self.page.wait_for_timeout(1500)
+                        logger.debug("Marked as finished (read)")
+                        return
+
+                # Click the chevron to open dropdown
+                expand_btn = self.page.locator('div.dropdown button.expand-dropdown-button').first
+                if expand_btn.count() > 0:
+                    expand_btn.click()
+                    self.page.wait_for_timeout(500)
+
+                    # Try multiple naming patterns for the shelf button
+                    for pattern in [target, f'Mark book as {target}', f'Mark as {target}']:
+                        option = self.page.locator(f'button:text-is("{pattern}")').first
+                        try:
+                            if option.count() > 0 and option.is_visible():
+                                option.click()
+                                self.page.wait_for_timeout(1500)
+                                logger.debug(f"Changed shelf to: {shelf}")
+                                return
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.debug(f"Dropdown shelf change failed: {e}")
+
+        # Case 2: Book is NOT in library yet
+        # The main button is button.read-status-button with text "to read"
+        # (no button.read-status-label exists for non-library books)
+        add_button = self.page.locator('button.read-status-button:visible').first
+        try:
+            if add_button.count() > 0:
+                if shelf == "to read":
+                    add_button.click()
+                    self.page.wait_for_timeout(1500)
+                    logger.debug("Added to To-Read")
+                    return
+                else:
+                    # Open dropdown for other shelf options
+                    expand_btn = self.page.locator('div.dropdown button.expand-dropdown-button:visible').first
+                    if expand_btn.count() > 0:
+                        expand_btn.click()
+                        self.page.wait_for_timeout(500)
+
+                        # Try multiple naming patterns
+                        for pattern in [target, f'Mark as {target}', f'Mark book as {target}']:
+                            option = self.page.locator(f'button.read-status-button:has-text("{pattern}"):visible').first
+                            try:
+                                if option.count() > 0:
+                                    option.click()
+                                    self.page.wait_for_timeout(1500)
+                                    logger.debug(f"Added to shelf: {shelf}")
+                                    return
+                            except Exception:
+                                continue
+        except Exception as e:
+            logger.debug(f"Add-to-library failed: {e}")
+
+        raise BookSyncError(f"Could not set shelf to '{shelf}' for book {uuid}")
+
+    def _navigate_to_review_page(self, uuid: str) -> bool:
+        """Navigate to the review page for a book.
+
+        First goes to the book page, then clicks the review link.
+        Direct URL navigation to /reviews/new can redirect back to the
+        book page in some cases.
+
+        Returns True if successfully on the review page.
+        """
+        book_url = f"{StoryGraphSelectors.BOOK_PAGE_URL}/{uuid}"
+        self.page.goto(book_url)
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_timeout(1000)
+
+        # Find the review link by href pattern (the link text may be empty
+        # or in a child element, so text matching is unreliable)
+        review_link = self.page.locator(f'a[href*="reviews/new?book_id={uuid}"], a[href*="reviews/"][href*="{uuid}"]').first
+        try:
+            if review_link.count() > 0:
+                review_link.click()
+                self.page.wait_for_load_state("networkidle")
+                self.page.wait_for_timeout(1000)
+                # Check we're on the add/edit review form, not the community reviews page
+                if "reviews/new" in self.page.url or "reviews/edit" in self.page.url:
+                    return True
+                if "book_reviews/" in self.page.url:
+                    logger.debug("Redirected to community reviews — review already exists")
+                    return False
+        except Exception as e:
+            logger.debug(f"Could not click review link: {e}")
+
+        # Fallback: try direct URL with return_to
+        review_url = f"{StoryGraphSelectors.REVIEW_URL}?book_id={uuid}&return_to=%2Fbooks%2F{uuid}"
+        self.page.goto(review_url)
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_timeout(1000)
+        if "book_reviews/" in self.page.url:
+            logger.debug("Redirected to community reviews — review already exists")
+            return False
+        return "reviews/" in self.page.url
+
+    def _set_rating(self, uuid: str, rating: int) -> None:
+        """Navigate to review page and set star rating.
+
+        If a review already exists (StoryGraph redirects to /book_reviews/),
+        skip — don't overwrite existing ratings.
+        """
+        if rating < 1 or rating > 5:
+            return
+
+        if not self._navigate_to_review_page(uuid):
+            logger.debug(f"Review/rating already exists for {uuid}, skipping")
+            return
+
+        try:
+            int_select = self.page.locator(StoryGraphSelectors.RATING_INTEGER_SELECT)
+            if int_select.count() > 0:
+                int_select.select_option(str(rating))
+                logger.debug(f"Set rating to {rating}")
+            else:
+                logger.debug(f"Rating select not found — review may already exist")
+        except Exception as e:
+            logger.warning(f"Could not set rating: {e}")
+
+    def _set_review(self, uuid: str, review_text: str, rating: int = 0) -> None:
+        """Set review text on the review page. Navigates to review page if not already there."""
+        if not review_text:
+            return
+
+        # Navigate to review page if we're not already there
+        if "reviews/" not in self.page.url:
+            if not self._navigate_to_review_page(uuid):
+                logger.warning(f"Could not reach review page for {uuid}")
+                return
+
+            # Re-set rating if we navigated away
+            if rating > 0:
+                try:
+                    self.page.locator(StoryGraphSelectors.RATING_INTEGER_SELECT).select_option(str(rating))
+                except Exception:
+                    pass
+
+        try:
+            # Find the contenteditable editor
+            editor = self.page.locator(StoryGraphSelectors.REVIEW_EDITOR).first
+            if editor.count() > 0:
+                editor.click()
+                editor.fill(review_text)
+                logger.debug("Set review text")
+            else:
+                logger.warning("Review editor not found")
+                return
+
+            # Submit the review
+            submit = self.page.locator(StoryGraphSelectors.REVIEW_SUBMIT).first
+            if submit.count() > 0:
+                submit.click()
+                self.page.wait_for_timeout(2000)
+                logger.debug("Submitted review")
+        except Exception as e:
+            logger.warning(f"Could not set review: {e}")
+
+    def _set_dates(self, uuid: str, date_read: str) -> None:
+        """Navigate to read history page and set finish date."""
+        if not date_read:
+            return
+
+        # Parse the date (Goodreads format: YYYY/MM/DD or YYYY-MM-DD)
+        try:
+            date_read_clean = date_read.replace("/", "-").strip()
+            parts = date_read_clean.split("-")
+            if len(parts) != 3:
+                logger.warning(f"Cannot parse date: {date_read}")
+                return
+            year, month, day = parts[0], str(int(parts[1])), str(int(parts[2]))
+        except (ValueError, IndexError):
+            logger.warning(f"Cannot parse date: {date_read}")
+            return
+
+        history_url = f"{StoryGraphSelectors.READ_INSTANCES_URL}?book_id={uuid}"
+        self.page.goto(history_url)
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_timeout(500)
+
+        try:
+            # Set finish date fields
+            finish_day = self.page.locator(StoryGraphSelectors.READ_FINISH_DAY)
+            finish_month = self.page.locator(StoryGraphSelectors.READ_FINISH_MONTH)
+            finish_year = self.page.locator(StoryGraphSelectors.READ_FINISH_YEAR)
+
+            if finish_day.count() > 0:
+                finish_day.select_option(day)
+                finish_month.select_option(month)
+                finish_year.select_option(year)
+                logger.debug(f"Set finish date: {year}-{month}-{day}")
+
+                # Submit the form
+                submit = self.page.locator(StoryGraphSelectors.READ_HISTORY_SUBMIT).first
+                if submit.count() > 0 and submit.is_visible():
+                    submit.click()
+                    self.page.wait_for_timeout(1000)
+                    logger.debug("Submitted read history")
+            else:
+                logger.warning("Read history date fields not found")
+        except Exception as e:
+            logger.warning(f"Could not set read dates: {e}")
+
+    def wait_with_jitter(self, delay_min: float = 3.0, delay_max: float = 8.0) -> None:
+        """Wait a random amount of time to avoid rate limiting."""
+        delay = random.uniform(delay_min, delay_max)
+        logger.debug(f"Waiting {delay:.1f}s before next operation")
+        time.sleep(delay)
+
     def close(self) -> None:
         """Close browser context and page."""
         if self.page:
@@ -160,12 +482,27 @@ class StoryGraphClient:
     def _is_logged_in(self) -> bool:
         """Check if currently logged in."""
         try:
+            # First check: are we NOT on the sign-in page?
+            if "sign_in" in self.page.url:
+                return False
+
+            # Try selector-based detection with longer timeout
             self.page.wait_for_selector(
                 StoryGraphSelectors.LOGGED_IN_INDICATOR,
-                timeout=5000
+                timeout=10000
             )
             return True
         except Exception:
+            # Fallback: check if page contains a greeting or profile nav
+            try:
+                content = self.page.content()
+                if "Hi there," in content or "Hello," in content:
+                    return True
+                # Check for nav links that only appear when logged in
+                if "/users/sign_out" in content:
+                    return True
+            except Exception:
+                pass
             return False
 
     def _save_storage_state(self) -> None:
@@ -181,10 +518,9 @@ class StoryGraphClient:
         """Save screenshot for debugging."""
         if not self.page:
             return
-
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_dir = get_data_path() / "artifacts" / "screenshots" / timestamp
+            screenshot_dir = artifacts_dir() / "screenshots" / timestamp
             screenshot_dir.mkdir(parents=True, exist_ok=True)
             screenshot_path = screenshot_dir / f"{name}.png"
             self.page.screenshot(path=str(screenshot_path))
@@ -196,10 +532,9 @@ class StoryGraphClient:
         """Save page HTML for debugging."""
         if not self.page:
             return
-
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            html_dir = get_data_path() / "artifacts" / "html" / timestamp
+            html_dir = artifacts_dir() / "html" / timestamp
             html_dir.mkdir(parents=True, exist_ok=True)
             html_path = html_dir / f"{name}.html"
             html_path.write_text(self.page.content())

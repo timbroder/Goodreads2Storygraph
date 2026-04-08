@@ -8,6 +8,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 
 from .exceptions import SyncError
+from .paths import config_dir
 
 
 def get_data_path() -> Path:
@@ -112,6 +113,10 @@ class Config:
         dry_run: bool = False,
         force_sync: bool = False,
         max_sync_items: Optional[int] = None,
+        sync_delay_min: float = 3.0,
+        sync_delay_max: float = 8.0,
+        max_retries: int = 3,
+        retry_failed_books: bool = True,
         enrich_isbns: bool = False,
     ):
         """
@@ -124,6 +129,10 @@ class Config:
             dry_run: Export but don't upload
             force_sync: Force upload even if unchanged
             max_sync_items: Maximum items to sync (for testing)
+            sync_delay_min: Minimum delay between book syncs (seconds)
+            sync_delay_max: Maximum delay between book syncs (seconds)
+            max_retries: Maximum retry attempts for failed books
+            retry_failed_books: Whether to retry previously failed books
             enrich_isbns: Look up missing ISBNs before upload
         """
         self.accounts = accounts
@@ -132,6 +141,10 @@ class Config:
         self.dry_run = dry_run
         self.force_sync = force_sync
         self.max_sync_items = max_sync_items
+        self.sync_delay_min = sync_delay_min
+        self.sync_delay_max = sync_delay_max
+        self.max_retries = max_retries
+        self.retry_failed_books = retry_failed_books
         self.enrich_isbns = enrich_isbns
 
     def validate(self) -> None:
@@ -238,7 +251,7 @@ def load_config() -> Config:
         load_dotenv(env_path)
 
     # Try multi-account mode first
-    accounts_file = get_data_path() / "config" / "accounts.json"
+    accounts_file = config_dir() / "accounts.json"
     if accounts_file.exists():
         accounts = load_accounts_from_json(accounts_file)
     else:
@@ -253,6 +266,10 @@ def load_config() -> Config:
         dry_run=os.getenv("DRY_RUN", "false").lower() == "true",
         force_sync=os.getenv("FORCE_FULL_SYNC", "false").lower() == "true",
         max_sync_items=int(os.getenv("MAX_SYNC_ITEMS")) if os.getenv("MAX_SYNC_ITEMS") else None,
+        sync_delay_min=float(os.getenv("SYNC_DELAY_MIN", "3.0")),
+        sync_delay_max=float(os.getenv("SYNC_DELAY_MAX", "8.0")),
+        max_retries=int(os.getenv("MAX_RETRIES", "3")),
+        retry_failed_books=os.getenv("RETRY_FAILED_BOOKS", "true").lower() == "true",
         enrich_isbns=os.getenv("ENRICH_ISBNS", "false").lower() == "true",
     )
 

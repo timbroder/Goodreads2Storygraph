@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from sync.exceptions import GoodreadsExportError
-from sync.transform import calculate_hash, count_books, validate_csv
+from sync.transform import calculate_hash, count_books, parse_csv_to_books, validate_csv
 
 
 class TestValidateCSV:
@@ -252,3 +252,85 @@ class TestIntegration:
         assert hash1 != hash2
         # Count should increase
         assert count2 == count1 + 1
+
+
+class TestParseCSVToBooks:
+    """Tests for parse_csv_to_books."""
+
+    FULL_HEADER = (
+        "Book Id,Title,Author,Author l-f,Additional Authors,ISBN,ISBN13,"
+        "My Rating,Average Rating,Publisher,Binding,Number of Pages,"
+        "Year Published,Original Publication Year,Date Read,Date Added,"
+        "Bookshelves,Bookshelves with positions,Exclusive Shelf,"
+        "My Review,Spoiler,Private Notes,Read Count,Owned Copies"
+    )
+
+    def _write_csv(self, tmp_path, rows, header=None):
+        csv_file = tmp_path / "library.csv"
+        lines = [header or self.FULL_HEADER]
+        lines.extend(rows)
+        csv_file.write_text("\n".join(lines) + "\n")
+        return str(csv_file)
+
+    def test_parses_single_book(self, tmp_path):
+        path = self._write_csv(tmp_path, [
+            '12345,The Great Gatsby,F. Scott Fitzgerald,"Fitzgerald, F. Scott",,'
+            '="0743273567",="9780743273565",5,3.91,Scribner,Paperback,184,'
+            '2004,1925,2024/01/15,2024/01/01,"favorites, classics",'
+            '"favorites (#1), classics (#3)",read,A classic.,,,,1'
+        ])
+        books = parse_csv_to_books(path)
+        assert len(books) == 1
+        assert "12345" in books
+        book = books["12345"]
+        assert book.title == "The Great Gatsby"
+        assert book.isbn == "0743273567"
+        assert book.isbn13 == "9780743273565"
+        assert book.my_rating == 5
+        assert book.exclusive_shelf == "read"
+
+    def test_parses_multiple_books(self, tmp_path):
+        path = self._write_csv(tmp_path, [
+            '1,Book One,Author One,,,,="9781111111111",4,3.5,,,,,,,,,,read,,,,0,0',
+            '2,Book Two,Author Two,,,,="9782222222222",3,4.0,,,,,,,,,,to-read,,,,0,0',
+        ])
+        books = parse_csv_to_books(path)
+        assert len(books) == 2
+        assert books["1"].title == "Book One"
+        assert books["2"].exclusive_shelf == "to-read"
+
+    def test_handles_isbn_cleaning(self, tmp_path):
+        path = self._write_csv(tmp_path, [
+            '1,Test,Author,,,,="9780743273565",0,0,,,,,,,,,,read,,,,0,0',
+        ])
+        books = parse_csv_to_books(path)
+        assert books["1"].isbn13 == "9780743273565"
+
+    def test_handles_empty_fields(self, tmp_path):
+        path = self._write_csv(tmp_path, [
+            '1,Test,Author,,,,,0,0,,,,,,,,,,,,,,,',
+        ])
+        books = parse_csv_to_books(path)
+        assert books["1"].isbn == ""
+        assert books["1"].my_rating == 0
+        assert books["1"].num_pages is None
+
+    def test_missing_file_raises(self):
+        with pytest.raises(GoodreadsExportError, match="not found"):
+            parse_csv_to_books("/nonexistent/file.csv")
+
+    def test_skips_rows_without_book_id(self, tmp_path):
+        path = self._write_csv(tmp_path, [
+            '1,Book One,Author,,,,,,,,,,,,,,,,read,,,,0,0',
+            ',No ID Book,Author,,,,,,,,,,,,,,,,read,,,,0,0',
+        ])
+        books = parse_csv_to_books(path)
+        assert len(books) == 1
+
+    def test_keys_are_book_ids(self, tmp_path):
+        path = self._write_csv(tmp_path, [
+            '999,Some Book,Author,,,,,,,,,,,,,,,,read,,,,0,0',
+        ])
+        books = parse_csv_to_books(path)
+        assert "999" in books
+        assert books["999"].book_id == "999"
