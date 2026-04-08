@@ -392,12 +392,27 @@ class StoryGraphClient:
     def _is_logged_in(self) -> bool:
         """Check if currently logged in."""
         try:
+            # First check: are we NOT on the sign-in page?
+            if "sign_in" in self.page.url:
+                return False
+
+            # Try selector-based detection with longer timeout
             self.page.wait_for_selector(
                 StoryGraphSelectors.LOGGED_IN_INDICATOR,
-                timeout=5000
+                timeout=10000
             )
             return True
         except Exception:
+            # Fallback: check if page contains a greeting or profile nav
+            try:
+                content = self.page.content()
+                if "Hi there," in content or "Hello," in content:
+                    return True
+                # Check for nav links that only appear when logged in
+                if "/users/sign_out" in content:
+                    return True
+            except Exception:
+                pass
             return False
 
     def _save_storage_state(self) -> None:

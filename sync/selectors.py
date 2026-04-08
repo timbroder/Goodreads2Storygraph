@@ -40,8 +40,8 @@ class StoryGraphSelectors:
     SUCCESS_MESSAGE = '.alert-success, .notice, text="successfully"'
     IMPORT_COMPLETE = 'text="Import complete", text="imported successfully"'
 
-    # Verification (the profile avatar/image in the top nav bar)
-    LOGGED_IN_INDICATOR = 'text="Hello,", img[alt*="profile"], button:has-text("Open user menu")'
+    # Verification (logged-in homepage greeting or nav elements)
+    LOGGED_IN_INDICATOR = 'text="Hi there,", text="Hello,", img[alt*="profile"], button:has-text("Open user menu")'
 
     # Search / Browse
     BROWSE_URL = "https://app.thestorygraph.com/browse"
