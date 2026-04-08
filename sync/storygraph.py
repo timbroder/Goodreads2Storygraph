@@ -300,9 +300,9 @@ class StoryGraphClient:
     def _navigate_to_review_page(self, uuid: str) -> bool:
         """Navigate to the review page for a book.
 
-        First goes to the book page, then clicks the "add review" link
-        which includes the correct return_to parameter. Direct URL
-        navigation to /reviews/new can redirect back to the book page.
+        First goes to the book page, then clicks the review link.
+        Direct URL navigation to /reviews/new can redirect back to the
+        book page in some cases.
 
         Returns True if successfully on the review page.
         """
@@ -311,22 +311,21 @@ class StoryGraphClient:
         self.page.wait_for_load_state("networkidle")
         self.page.wait_for_timeout(1000)
 
-        # Click the "add review" link on the book page
-        review_link = self.page.locator('a:has-text("add review"), a:has-text("edit review")').first
+        # Find the review link by href pattern (the link text may be empty
+        # or in a child element, so text matching is unreliable)
+        review_link = self.page.locator(f'a[href*="reviews/new?book_id={uuid}"], a[href*="reviews/"][href*="{uuid}"]').first
         try:
-            if review_link.count() > 0 and review_link.is_visible():
+            if review_link.count() > 0:
                 review_link.click()
                 self.page.wait_for_load_state("networkidle")
                 self.page.wait_for_timeout(1000)
-
-                # Verify we're on the review page
                 if "reviews/" in self.page.url:
                     return True
         except Exception as e:
             logger.debug(f"Could not click review link: {e}")
 
-        # Fallback: try direct URL
-        review_url = f"{StoryGraphSelectors.REVIEW_URL}?book_id={uuid}&return_to=/books/{uuid}"
+        # Fallback: try direct URL with return_to
+        review_url = f"{StoryGraphSelectors.REVIEW_URL}?book_id={uuid}&return_to=%2Fbooks%2F{uuid}"
         self.page.goto(review_url)
         self.page.wait_for_load_state("networkidle")
         self.page.wait_for_timeout(1000)
