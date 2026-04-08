@@ -209,65 +209,93 @@ class StoryGraphClient:
         book_url = f"{StoryGraphSelectors.BOOK_PAGE_URL}/{uuid}"
         self.page.goto(book_url)
         self.page.wait_for_load_state("networkidle")
-        self.page.wait_for_timeout(500)
+        self.page.wait_for_timeout(1000)
 
-        # Map shelf name to selector
-        shelf_selectors = {
-            "to read": StoryGraphSelectors.SHELF_TO_READ_BUTTON,
-            "read": StoryGraphSelectors.SHELF_READ_BUTTON,
-            "currently reading": StoryGraphSelectors.SHELF_CURRENTLY_READING_BUTTON,
-            "did not finish": StoryGraphSelectors.SHELF_DID_NOT_FINISH_BUTTON,
+        # Map our shelf name to what StoryGraph uses in button text
+        shelf_button_text = {
+            "to read": "to read",
+            "read": "read",
+            "currently reading": "currently reading",
+            "did not finish": "did not finish",
         }
+        target = shelf_button_text.get(shelf, "to read")
 
-        selector = shelf_selectors.get(shelf, StoryGraphSelectors.SHELF_TO_READ_BUTTON)
-
-        # Check if the shelf button/dropdown is already showing the correct shelf
-        # The main button text indicates current shelf
+        # Check if already on the correct shelf
+        # StoryGraph shows "Book marked as {shelf}" for the current status button
+        already_on_shelf = self.page.locator(f'button:has-text("Book marked as {target}")').first
         try:
-            # First try clicking the main shelf button directly
-            button = self.page.locator(selector).first
-            if button.count() > 0 and button.is_visible():
-                button.click()
-                self.page.wait_for_timeout(1000)
-                logger.debug(f"Set shelf to: {shelf}")
+            if already_on_shelf.count() > 0 and already_on_shelf.is_visible():
+                logger.debug(f"Book already on shelf: {shelf}")
                 return
         except Exception:
             pass
 
-        # If direct click didn't work, try opening the dropdown first
+        # Case 1: Book is already in library (has a status button + chevron dropdown)
+        # Click the chevron to open dropdown, then click "Mark book as {target}"
         try:
-            # Look for the dropdown toggle (chevron button next to shelf)
-            dropdown_buttons = self.page.locator('button:near(button:has-text("read"))').all()
-            for btn in dropdown_buttons:
-                # Find the small toggle button (not the main shelf button)
-                text = btn.text_content().strip()
-                if not text or len(text) < 3:
-                    btn.click()
-                    self.page.wait_for_timeout(500)
-                    break
+            # Find the chevron dropdown toggle (small button next to the status button)
+            # It's identified by being near the status and having no meaningful text
+            chevron = self.page.locator('button:has-text("Book marked as")').locator("xpath=following-sibling::button").first
+            if chevron.count() > 0 and chevron.is_visible():
+                chevron.click()
+                self.page.wait_for_timeout(500)
 
-            # Now click the shelf option
-            shelf_option = self.page.locator(f'button:has-text("{shelf}")').first
-            if shelf_option.is_visible():
-                shelf_option.click()
-                self.page.wait_for_timeout(1000)
-                logger.debug(f"Set shelf to: {shelf} (via dropdown)")
-                return
+                # Click the shelf option in the dropdown
+                mark_button = self.page.locator(f'button:has-text("Mark book as {target}")').first
+                if mark_button.count() > 0 and mark_button.is_visible():
+                    mark_button.click()
+                    self.page.wait_for_timeout(1500)
+                    logger.debug(f"Changed shelf to: {shelf}")
+                    return
+
+            # Also try "Mark as finished" shortcut for "read"
+            if shelf == "read":
+                finished_btn = self.page.locator('button:has-text("Mark as finished")').first
+                if finished_btn.count() > 0 and finished_btn.is_visible():
+                    finished_btn.click()
+                    self.page.wait_for_timeout(1500)
+                    logger.debug("Marked as finished (read)")
+                    return
         except Exception as e:
-            logger.warning(f"Could not set shelf to '{shelf}': {e}")
+            logger.debug(f"Dropdown approach failed: {e}")
 
-        # If shelf is "to read" and the button says "Add to your To-Read Pile", click it
+        # Case 2: Book is NOT in library yet (has "Add to your To-Read Pile" button)
         try:
             add_button = self.page.locator('button:has-text("Add to your To-Read Pile")').first
             if add_button.count() > 0 and add_button.is_visible():
-                add_button.click()
-                self.page.wait_for_timeout(1000)
-                logger.debug("Added book to To-Read Pile")
-                return
-        except Exception:
-            pass
+                if shelf == "to read":
+                    # Just click it directly
+                    add_button.click()
+                    self.page.wait_for_timeout(1500)
+                    logger.debug("Added to To-Read Pile")
+                    return
+                else:
+                    # Need to use the dropdown next to it to pick a different shelf
+                    # The chevron is the sibling button
+                    chevron = add_button.locator("xpath=following-sibling::button").first
+                    if chevron.count() > 0:
+                        chevron.click()
+                        self.page.wait_for_timeout(500)
+                        option = self.page.locator(f'button:has-text("{target}")').first
+                        if option.count() > 0 and option.is_visible():
+                            option.click()
+                            self.page.wait_for_timeout(1500)
+                            logger.debug(f"Added to shelf: {shelf}")
+                            return
 
-        logger.warning(f"Could not confidently set shelf to '{shelf}', book may already be on correct shelf")
+                    # Fallback: add to to-read first, then change shelf
+                    add_button.click()
+                    self.page.wait_for_timeout(1500)
+                    logger.debug("Added to To-Read, will change shelf next")
+                    # Reload and change shelf
+                    self.page.reload()
+                    self.page.wait_for_load_state("networkidle")
+                    self._set_shelf(uuid, shelf)
+                    return
+        except Exception as e:
+            logger.debug(f"Add-to-library approach failed: {e}")
+
+        logger.warning(f"Could not set shelf to '{shelf}' — book may already be on correct shelf")
 
     def _set_rating(self, uuid: str, rating: int) -> None:
         """Navigate to review page and set star rating."""
