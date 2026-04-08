@@ -15,6 +15,7 @@ from .exceptions import (
     SyncError,
 )
 from .goodreads import GoodreadsClient
+from .isbn_lookup import enrich_csv_with_isbns
 from .logging_setup import setup_logging
 from .state import (
     calculate_csv_hash,
@@ -82,6 +83,18 @@ def sync_account(account: AccountConfig, config: Config, browser: Browser, logge
         validate_csv(csv_path)
         book_count = count_books(csv_path)
         logger.info(f"{account_prefix} CSV validated: {book_count} books found")
+
+        # Step 2b: Enrich ISBNs if enabled
+        if config.enrich_isbns:
+            logger.info("-" * 60)
+            logger.info(f"{account_prefix} STEP 2b: Enrich missing ISBNs")
+            logger.info("-" * 60)
+            books_without_isbn, isbns_found, cache_hits = enrich_csv_with_isbns(csv_path)
+            if books_without_isbn > 0:
+                logger.info(f"{account_prefix} Books without ISBN: {books_without_isbn}")
+                logger.info(f"{account_prefix} ISBNs found: {isbns_found} ({cache_hits} from cache)")
+            else:
+                logger.info(f"{account_prefix} All books already have ISBNs")
 
         # Step 3: Fast-path check — skip if CSV completely unchanged
         logger.info("-" * 60)
@@ -343,6 +356,11 @@ def main() -> int:
         if config.force_sync:
             logger.info("FORCE SYNC MODE - Will sync even if unchanged")
 
+        if config.enrich_isbns:
+            logger.info("ISBN ENRICHMENT - Will look up missing ISBNs via API")
+
+        # Initialize Playwright
+        logger.info("Initializing browser")
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=config.headless)
 

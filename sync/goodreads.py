@@ -73,28 +73,45 @@ class GoodreadsClient:
 
             # Step 2: Click "Sign in with email" to go to Amazon auth
             logger.info("Clicking 'Sign in with email'")
-            self.page.click(GoodreadsSelectors.SIGN_IN_WITH_EMAIL)
-            self.page.wait_for_load_state("networkidle")
-            self.page.wait_for_timeout(2000)
+            try:
+                self.page.click(GoodreadsSelectors.SIGN_IN_WITH_EMAIL)
+                self.page.wait_for_load_state("networkidle")
+                self.page.wait_for_timeout(2000)
+            except Exception as e:
+                logger.debug(f"No 'Sign in with email' button found, proceeding with direct login: {e}")
+
+            # Check if we were auto-logged in via Amazon SSO
+            if self._is_logged_in():
+                logger.info("Already logged in via Amazon SSO")
+                self._save_storage_state()
+                return
 
             # Step 3: Fill Amazon auth form
             logger.info("Entering credentials on Amazon auth page")
             self._save_screenshot("amazon_auth_page")
-            self.page.fill(GoodreadsSelectors.LOGIN_EMAIL_INPUT, self.email)
-            self.page.fill(GoodreadsSelectors.LOGIN_PASSWORD_INPUT, self.password)
+            try:
+                self.page.fill(GoodreadsSelectors.LOGIN_EMAIL_INPUT, self.email, timeout=10000)
+                self.page.fill(GoodreadsSelectors.LOGIN_PASSWORD_INPUT, self.password, timeout=10000)
 
-            # Step 4: Submit
-            self.page.click(GoodreadsSelectors.LOGIN_SUBMIT_BUTTON)
-            self.page.wait_for_load_state("networkidle")
-            self.page.wait_for_timeout(3000)  # Extra wait for redirect back to Goodreads
+                # Step 4: Submit
+                self.page.click(GoodreadsSelectors.LOGIN_SUBMIT_BUTTON)
+                self.page.wait_for_load_state("networkidle")
+                self.page.wait_for_timeout(3000)  # Extra wait for redirect back to Goodreads
 
-            # Verify login success
-            if not self._is_logged_in():
-                self._save_screenshot("login_failed")
-                raise GoodreadsExportError("Login verification failed")
+                # Verify login success
+                if not self._is_logged_in():
+                    self._save_screenshot("login_failed")
+                    raise GoodreadsExportError("Login verification failed")
 
-            logger.info("Login successful")
-            self._save_storage_state()
+                logger.info("Login successful")
+                self._save_storage_state()
+            except Exception as form_error:
+                # If form filling fails, check if we're actually logged in
+                if self._is_logged_in():
+                    logger.info("Login succeeded via redirect")
+                    self._save_storage_state()
+                else:
+                    raise form_error
 
         except Exception as e:
             self._save_screenshot("login_error")
@@ -118,49 +135,62 @@ class GoodreadsClient:
             self.page.goto(GoodreadsSelectors.EXPORT_URL)
             self.page.wait_for_load_state("networkidle")
 
-            # Set up download handler
+            # Set up download path
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             download_path = artifacts_dir() / f"goodreads_export_{self.account_name}_{timestamp}.csv"
 
-            # Click export button to start generation
-            logger.info("Triggering export generation")
-            self.page.click(GoodreadsSelectors.EXPORT_BUTTON)
-            self.page.wait_for_timeout(3000)
-
-            # Goodreads generates the export server-side. Poll for the download
-            # link to appear (it may take 1-3 minutes for large libraries).
-            logger.info("Waiting for export to be generated (this can take a few minutes)...")
-            max_wait = 300  # 5 minutes max
-            poll_interval = 5
-            elapsed = 0
-            while elapsed < max_wait:
-                # Look for a download link (CSV link that appears when ready)
-                download_link = self.page.locator('a[href*="review_porter"]')
-                if download_link.count() > 0 and download_link.first.is_visible():
-                    logger.info("Export ready, downloading")
-                    break
-
-                # Also check for a direct "Your export" link
-                export_link = self.page.locator('a:has-text("Your export")')
-                if export_link.count() > 0 and export_link.first.is_visible():
-                    logger.info("Export ready, downloading")
-                    download_link = export_link
-                    break
-
-                elapsed += poll_interval
-                if elapsed % 30 == 0:
-                    logger.info(f"Still waiting for export... ({elapsed}s)")
-                self.page.wait_for_timeout(poll_interval * 1000)
-                # Reload to check for updated status
-                self.page.reload()
-                self.page.wait_for_load_state("networkidle")
+            # Check if a download link already exists
+            download_link = self.page.locator(GoodreadsSelectors.DOWNLOAD_LINK)
+            if download_link.count() > 0 and download_link.first.is_visible():
+                logger.info("Found existing export download link")
             else:
-                self._save_screenshot("export_timeout")
-                raise GoodreadsExportError(
-                    f"Export generation timed out after {max_wait}s"
-                )
+                # Click export button to start generation
+                logger.info("Triggering export generation")
+                export_btn = self.page.locator(GoodreadsSelectors.EXPORT_BUTTON)
+                if export_btn.count() > 0:
+                    if export_btn.is_enabled():
+                        export_btn.click()
+                    else:
+                        logger.info("Export already in progress, waiting...")
+                else:
+                    self.page.click(GoodreadsSelectors.EXPORT_BUTTON)
+                self.page.wait_for_timeout(3000)
+
+                # Goodreads generates the export server-side. Poll for the download
+                # link to appear (it may take 1-3 minutes for large libraries).
+                logger.info("Waiting for export to be generated (this can take a few minutes)...")
+                max_wait = 300  # 5 minutes max
+                poll_interval = 5
+                elapsed = 0
+                while elapsed < max_wait:
+                    # Look for download link using the centralized selector
+                    download_link = self.page.locator(GoodreadsSelectors.DOWNLOAD_LINK)
+                    if download_link.count() > 0 and download_link.first.is_visible():
+                        logger.info("Export ready, downloading")
+                        break
+
+                    # Also check for a direct "Your export" link
+                    export_link = self.page.locator('a:has-text("Your export")')
+                    if export_link.count() > 0 and export_link.first.is_visible():
+                        logger.info("Export ready, downloading")
+                        download_link = export_link
+                        break
+
+                    elapsed += poll_interval
+                    if elapsed % 30 == 0:
+                        logger.info(f"Still waiting for export... ({elapsed}s)")
+                    self.page.wait_for_timeout(poll_interval * 1000)
+                    # Reload to check for updated status
+                    self.page.reload()
+                    self.page.wait_for_load_state("networkidle")
+                else:
+                    self._save_screenshot("export_timeout")
+                    raise GoodreadsExportError(
+                        f"Export generation timed out after {max_wait}s"
+                    )
 
             # Download the file
+            logger.info("Downloading export file")
             with self.page.expect_download(timeout=60000) as download_info:
                 download_link.first.click()
 

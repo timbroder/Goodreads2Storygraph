@@ -11,6 +11,19 @@ from .exceptions import SyncError
 from .paths import config_dir
 
 
+def get_data_path() -> Path:
+    """
+    Get the base data directory path.
+
+    Uses DATA_PATH env var if set, otherwise defaults to /data (for Docker).
+    For local development, set DATA_PATH=./data in .env.
+
+    Returns:
+        Path to data directory
+    """
+    return Path(os.getenv("DATA_PATH", "/data"))
+
+
 class AccountConfig:
     """Configuration for a single account pair."""
 
@@ -104,6 +117,7 @@ class Config:
         sync_delay_max: float = 8.0,
         max_retries: int = 3,
         retry_failed_books: bool = True,
+        enrich_isbns: bool = False,
     ):
         """
         Initialize configuration.
@@ -115,6 +129,11 @@ class Config:
             dry_run: Export but don't upload
             force_sync: Force upload even if unchanged
             max_sync_items: Maximum items to sync (for testing)
+            sync_delay_min: Minimum delay between book syncs (seconds)
+            sync_delay_max: Maximum delay between book syncs (seconds)
+            max_retries: Maximum retry attempts for failed books
+            retry_failed_books: Whether to retry previously failed books
+            enrich_isbns: Look up missing ISBNs before upload
         """
         self.accounts = accounts
         self.headless = headless
@@ -126,6 +145,7 @@ class Config:
         self.sync_delay_max = sync_delay_max
         self.max_retries = max_retries
         self.retry_failed_books = retry_failed_books
+        self.enrich_isbns = enrich_isbns
 
     def validate(self) -> None:
         """
@@ -250,6 +270,7 @@ def load_config() -> Config:
         sync_delay_max=float(os.getenv("SYNC_DELAY_MAX", "8.0")),
         max_retries=int(os.getenv("MAX_RETRIES", "3")),
         retry_failed_books=os.getenv("RETRY_FAILED_BOOKS", "true").lower() == "true",
+        enrich_isbns=os.getenv("ENRICH_ISBNS", "false").lower() == "true",
     )
 
     config.validate()

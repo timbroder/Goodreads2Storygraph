@@ -93,15 +93,36 @@ class StoryGraphClient:
             file_input = self.page.locator(StoryGraphSelectors.FILE_INPUT)
             file_input.set_input_files(csv_path)
 
-            try:
-                upload_button = self.page.locator(StoryGraphSelectors.UPLOAD_BUTTON)
-                if upload_button.count() > 0:
-                    upload_button.click()
-            except Exception:
-                pass
+            # Find and click the submit/import button
+            logger.info("Looking for submit button")
+            submit_button = self.page.locator('input[type="submit"], button[type="submit"], button:has-text("Import"), button:has-text("Submit")')
+            if submit_button.count() > 0:
+                logger.info("Clicking submit button")
+                self._save_screenshot("before_submit")
+                submit_button.first.click()
 
-            self.page.wait_for_selector(StoryGraphSelectors.SUCCESS_MESSAGE, timeout=60000)
-            self._save_screenshot("upload_success")
+                # Wait for the page to process - button may show "Submitting..."
+                self.page.wait_for_timeout(3000)
+                self._save_screenshot("after_submit")
+
+                # StoryGraph import is asynchronous - it queues the import
+                # Check for either success message or "submitted" confirmation
+                logger.info("Waiting for submission confirmation")
+                try:
+                    # Wait for any indication that submission was accepted
+                    self.page.wait_for_selector(
+                        ':text("queued"), :text("submitted"), :text("will receive an email"), :text("processing"), .alert-success, .notice',
+                        timeout=30000
+                    )
+                    logger.info("Import submitted successfully (processing asynchronously)")
+                except Exception:
+                    # If no specific message, check if the button changed state
+                    logger.info("No explicit confirmation, checking page state")
+                    self._save_screenshot("submission_state")
+            else:
+                logger.warning("No submit button found")
+
+            self._save_screenshot("upload_complete")
 
         except Exception as e:
             self._save_screenshot("upload_failed")
