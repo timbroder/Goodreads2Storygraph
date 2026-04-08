@@ -9,6 +9,7 @@ from typing import Optional
 from playwright.sync_api import Browser, Page
 
 from .exceptions import GoodreadsExportError, PlaywrightError
+from .paths import artifacts_dir, state_dir
 from .selectors import GoodreadsSelectors
 
 
@@ -33,7 +34,7 @@ class GoodreadsClient:
         self.password = password
         self.account_name = account_name
         self.page: Optional[Page] = None
-        self.storage_state_path = Path(f"/data/state/playwright_storage_goodreads_{account_name}.json")
+        self.storage_state_path = state_dir() / f"playwright_storage_goodreads_{account_name}.json"
 
     def login(self) -> None:
         """
@@ -110,7 +111,7 @@ class GoodreadsClient:
 
             # Set up download handler
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            download_path = Path(f"/data/artifacts/goodreads_export_{self.account_name}_{timestamp}.csv")
+            download_path = artifacts_dir() / f"goodreads_export_{self.account_name}_{timestamp}.csv"
 
             logger.info("Triggering export")
             with self.page.expect_download(timeout=60000) as download_info:
@@ -162,7 +163,7 @@ class GoodreadsClient:
 
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_dir = Path(f"/data/artifacts/screenshots/{timestamp}")
+            screenshot_dir = artifacts_dir() / "screenshots" / timestamp
             screenshot_dir.mkdir(parents=True, exist_ok=True)
             screenshot_path = screenshot_dir / f"{name}.png"
             self.page.screenshot(path=str(screenshot_path))
@@ -177,7 +178,7 @@ class GoodreadsClient:
 
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            html_dir = Path(f"/data/artifacts/html/{timestamp}")
+            html_dir = artifacts_dir() / "html" / timestamp
             html_dir.mkdir(parents=True, exist_ok=True)
             html_path = html_dir / f"{name}.html"
             html_path.write_text(self.page.content())

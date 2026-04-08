@@ -8,6 +8,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 
 from .exceptions import SyncError
+from .paths import config_dir
 
 
 class AccountConfig:
@@ -230,7 +231,7 @@ def load_config() -> Config:
         load_dotenv(env_path)
 
     # Try multi-account mode first
-    accounts_file = Path("/data/config/accounts.json")
+    accounts_file = config_dir() / "accounts.json"
     if accounts_file.exists():
         accounts = load_accounts_from_json(accounts_file)
     else:

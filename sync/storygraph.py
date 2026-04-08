@@ -13,6 +13,7 @@ from playwright.sync_api import Browser, Page
 
 from .exceptions import BookNotFoundError, BookSyncError, StoryGraphUploadError
 from .models import BookRecord
+from .paths import artifacts_dir, state_dir
 from .selectors import StoryGraphSelectors
 
 
@@ -28,7 +29,7 @@ class StoryGraphClient:
         self.password = password
         self.account_name = account_name
         self.page: Optional[Page] = None
-        self.storage_state_path = Path(f"/data/state/playwright_storage_storygraph_{account_name}.json")
+        self.storage_state_path = state_dir() / f"playwright_storage_storygraph_{account_name}.json"
 
     def login(self) -> None:
         """Login to StoryGraph using stored session or credentials."""
@@ -414,7 +415,7 @@ class StoryGraphClient:
             return
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            screenshot_dir = Path(f"/data/artifacts/screenshots/{timestamp}")
+            screenshot_dir = artifacts_dir() / "screenshots" / timestamp
             screenshot_dir.mkdir(parents=True, exist_ok=True)
             screenshot_path = screenshot_dir / f"{name}.png"
             self.page.screenshot(path=str(screenshot_path))
@@ -428,7 +429,7 @@ class StoryGraphClient:
             return
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            html_dir = Path(f"/data/artifacts/html/{timestamp}")
+            html_dir = artifacts_dir() / "html" / timestamp
             html_dir.mkdir(parents=True, exist_ok=True)
             html_path = html_dir / f"{name}.html"
             html_path.write_text(self.page.content())
