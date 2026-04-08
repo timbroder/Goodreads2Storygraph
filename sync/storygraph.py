@@ -205,95 +205,83 @@ class StoryGraphClient:
             raise BookSyncError(f"Failed to sync '{book.title}': {e}")
 
     def _set_shelf(self, uuid: str, shelf: str) -> None:
-        """Navigate to book page and set the shelf."""
+        """Navigate to book page and set the shelf.
+
+        StoryGraph DOM structure for shelf controls:
+        - Status button: button.read-status-label (text = current shelf name)
+        - Chevron: button:has-text("Expand dropdown menu") inside div.dropdown
+        - Dropdown options: button:text-is("read"), button:text-is("to read"), etc.
+        - For books not in library: button "Add to your To-Read Pile" with similar dropdown
+        """
         book_url = f"{StoryGraphSelectors.BOOK_PAGE_URL}/{uuid}"
         self.page.goto(book_url)
         self.page.wait_for_load_state("networkidle")
         self.page.wait_for_timeout(1000)
 
-        # Map our shelf name to what StoryGraph uses in button text
-        shelf_button_text = {
-            "to read": "to read",
-            "read": "read",
-            "currently reading": "currently reading",
-            "did not finish": "did not finish",
-        }
-        target = shelf_button_text.get(shelf, "to read")
+        target = shelf  # "read", "to read", "currently reading", "did not finish"
 
-        # Check if already on the correct shelf
-        # StoryGraph shows "Book marked as {shelf}" for the current status button
-        already_on_shelf = self.page.locator(f'button:has-text("Book marked as {target}")').first
+        # Check if already on the correct shelf via the status label button
+        status_btn = self.page.locator("button.read-status-label").first
         try:
-            if already_on_shelf.count() > 0 and already_on_shelf.is_visible():
-                logger.debug(f"Book already on shelf: {shelf}")
-                return
+            if status_btn.count() > 0:
+                current_shelf = status_btn.text_content().strip().lower()
+                if current_shelf == target:
+                    logger.debug(f"Book already on shelf: {shelf}")
+                    return
         except Exception:
             pass
 
-        # Case 1: Book is already in library (has a status button + chevron dropdown)
-        # Click the chevron to open dropdown, then click "Mark book as {target}"
+        # Case 1: Book is already in library (has status label + dropdown)
+        if status_btn.count() > 0:
+            try:
+                # Click the "Expand dropdown menu" chevron button
+                expand_btn = self.page.locator('div.dropdown button:has-text("Expand dropdown menu")').first
+                if expand_btn.count() > 0:
+                    expand_btn.click()
+                    self.page.wait_for_timeout(500)
+
+                    # Click the target shelf option (exact text match)
+                    option = self.page.locator(f'div.dropdown button:text-is("{target}")').first
+                    if option.count() > 0 and option.is_visible():
+                        option.click()
+                        self.page.wait_for_timeout(1500)
+                        logger.debug(f"Changed shelf to: {shelf}")
+                        return
+
+                # Shortcut: "Mark as finished" for read shelf
+                if shelf == "read":
+                    finished_btn = self.page.locator('button:has-text("Mark as finished"), button.mark-as-finished-btn').first
+                    if finished_btn.count() > 0 and finished_btn.is_visible():
+                        finished_btn.click()
+                        self.page.wait_for_timeout(1500)
+                        logger.debug("Marked as finished (read)")
+                        return
+            except Exception as e:
+                logger.debug(f"Dropdown shelf change failed: {e}")
+
+        # Case 2: Book is NOT in library (has "Add to your To-Read Pile")
+        add_button = self.page.locator('button:has-text("Add to your To-Read Pile")').first
         try:
-            # Find the chevron dropdown toggle (small button next to the status button)
-            # It's identified by being near the status and having no meaningful text
-            chevron = self.page.locator('button:has-text("Book marked as")').locator("xpath=following-sibling::button").first
-            if chevron.count() > 0 and chevron.is_visible():
-                chevron.click()
-                self.page.wait_for_timeout(500)
-
-                # Click the shelf option in the dropdown
-                mark_button = self.page.locator(f'button:has-text("Mark book as {target}")').first
-                if mark_button.count() > 0 and mark_button.is_visible():
-                    mark_button.click()
-                    self.page.wait_for_timeout(1500)
-                    logger.debug(f"Changed shelf to: {shelf}")
-                    return
-
-            # Also try "Mark as finished" shortcut for "read"
-            if shelf == "read":
-                finished_btn = self.page.locator('button:has-text("Mark as finished")').first
-                if finished_btn.count() > 0 and finished_btn.is_visible():
-                    finished_btn.click()
-                    self.page.wait_for_timeout(1500)
-                    logger.debug("Marked as finished (read)")
-                    return
-        except Exception as e:
-            logger.debug(f"Dropdown approach failed: {e}")
-
-        # Case 2: Book is NOT in library yet (has "Add to your To-Read Pile" button)
-        try:
-            add_button = self.page.locator('button:has-text("Add to your To-Read Pile")').first
             if add_button.count() > 0 and add_button.is_visible():
                 if shelf == "to read":
-                    # Just click it directly
                     add_button.click()
                     self.page.wait_for_timeout(1500)
                     logger.debug("Added to To-Read Pile")
                     return
                 else:
-                    # Need to use the dropdown next to it to pick a different shelf
-                    # The chevron is the sibling button
-                    chevron = add_button.locator("xpath=following-sibling::button").first
-                    if chevron.count() > 0:
-                        chevron.click()
+                    # Open the dropdown next to it for other shelf options
+                    expand_btn = self.page.locator('div.dropdown button:has-text("Expand dropdown menu")').first
+                    if expand_btn.count() > 0:
+                        expand_btn.click()
                         self.page.wait_for_timeout(500)
-                        option = self.page.locator(f'button:has-text("{target}")').first
+                        option = self.page.locator(f'div.dropdown button:text-is("{target}")').first
                         if option.count() > 0 and option.is_visible():
                             option.click()
                             self.page.wait_for_timeout(1500)
                             logger.debug(f"Added to shelf: {shelf}")
                             return
-
-                    # Fallback: add to to-read first, then change shelf
-                    add_button.click()
-                    self.page.wait_for_timeout(1500)
-                    logger.debug("Added to To-Read, will change shelf next")
-                    # Reload and change shelf
-                    self.page.reload()
-                    self.page.wait_for_load_state("networkidle")
-                    self._set_shelf(uuid, shelf)
-                    return
         except Exception as e:
-            logger.debug(f"Add-to-library approach failed: {e}")
+            logger.debug(f"Add-to-library failed: {e}")
 
         raise BookSyncError(f"Could not set shelf to '{shelf}' for book {uuid}")
 
