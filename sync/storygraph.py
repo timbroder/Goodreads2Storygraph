@@ -319,8 +319,12 @@ class StoryGraphClient:
                 review_link.click()
                 self.page.wait_for_load_state("networkidle")
                 self.page.wait_for_timeout(1000)
-                if "reviews/" in self.page.url:
+                # Check we're on the add/edit review form, not the community reviews page
+                if "reviews/new" in self.page.url or "reviews/edit" in self.page.url:
                     return True
+                if "book_reviews/" in self.page.url:
+                    logger.debug("Redirected to community reviews — review already exists")
+                    return False
         except Exception as e:
             logger.debug(f"Could not click review link: {e}")
 
@@ -329,16 +333,22 @@ class StoryGraphClient:
         self.page.goto(review_url)
         self.page.wait_for_load_state("networkidle")
         self.page.wait_for_timeout(1000)
+        if "book_reviews/" in self.page.url:
+            logger.debug("Redirected to community reviews — review already exists")
+            return False
         return "reviews/" in self.page.url
 
     def _set_rating(self, uuid: str, rating: int) -> None:
-        """Navigate to review page and set star rating."""
+        """Navigate to review page and set star rating.
+
+        If a review already exists (StoryGraph redirects to /book_reviews/),
+        skip — don't overwrite existing ratings.
+        """
         if rating < 1 or rating > 5:
             return
 
         if not self._navigate_to_review_page(uuid):
-            self._save_screenshot(f"rating_no_review_page_{uuid[:8]}")
-            logger.warning(f"Could not reach review page for {uuid}")
+            logger.debug(f"Review/rating already exists for {uuid}, skipping")
             return
 
         try:
@@ -347,8 +357,7 @@ class StoryGraphClient:
                 int_select.select_option(str(rating))
                 logger.debug(f"Set rating to {rating}")
             else:
-                self._save_screenshot(f"rating_not_found_{uuid[:8]}")
-                logger.warning(f"Rating select not found at {self.page.url}")
+                logger.debug(f"Rating select not found — review may already exist")
         except Exception as e:
             logger.warning(f"Could not set rating: {e}")
 
