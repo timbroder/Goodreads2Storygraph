@@ -66,18 +66,27 @@ class GoodreadsClient:
             context = self.browser.new_context()
             self.page = context.new_page()
 
-            logger.info("Navigating to Goodreads login")
-            self.page.goto("https://www.goodreads.com/user/sign_in")
+            # Step 1: Go to Goodreads sign-in page
+            logger.info("Navigating to Goodreads sign-in")
+            self.page.goto(GoodreadsSelectors.SIGN_IN_URL)
             self.page.wait_for_load_state("networkidle")
 
-            # Fill login form
-            logger.info("Entering credentials")
+            # Step 2: Click "Sign in with email" to go to Amazon auth
+            logger.info("Clicking 'Sign in with email'")
+            self.page.click(GoodreadsSelectors.SIGN_IN_WITH_EMAIL)
+            self.page.wait_for_load_state("networkidle")
+            self.page.wait_for_timeout(2000)
+
+            # Step 3: Fill Amazon auth form
+            logger.info("Entering credentials on Amazon auth page")
+            self._save_screenshot("amazon_auth_page")
             self.page.fill(GoodreadsSelectors.LOGIN_EMAIL_INPUT, self.email)
             self.page.fill(GoodreadsSelectors.LOGIN_PASSWORD_INPUT, self.password)
 
-            # Submit form
+            # Step 4: Submit
             self.page.click(GoodreadsSelectors.LOGIN_SUBMIT_BUTTON)
             self.page.wait_for_load_state("networkidle")
+            self.page.wait_for_timeout(3000)  # Extra wait for redirect back to Goodreads
 
             # Verify login success
             if not self._is_logged_in():

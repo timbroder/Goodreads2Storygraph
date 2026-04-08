@@ -4,10 +4,14 @@
 class GoodreadsSelectors:
     """Selectors for Goodreads website."""
 
-    # Login page
-    LOGIN_EMAIL_INPUT = 'input[name="user[email]"], input#ap_email'
-    LOGIN_PASSWORD_INPUT = 'input[name="user[password]"], input#ap_password'
-    LOGIN_SUBMIT_BUTTON = 'button[type="submit"], input[type="submit"]'
+    # Sign-in landing page (provider selection)
+    SIGN_IN_URL = "https://www.goodreads.com/user/sign_in"
+    SIGN_IN_WITH_EMAIL = 'a:has-text("Sign in with email")'
+
+    # Amazon auth page (after clicking "Sign in with email")
+    LOGIN_EMAIL_INPUT = 'input[name="email"], input#ap_email'
+    LOGIN_PASSWORD_INPUT = 'input[name="password"], input#ap_password'
+    LOGIN_SUBMIT_BUTTON = 'input#signInSubmit, button[type="submit"], input[type="submit"]'
 
     # Export page
     EXPORT_URL = "https://www.goodreads.com/review/import"
@@ -15,7 +19,7 @@ class GoodreadsSelectors:
     DOWNLOAD_LINK = 'a[href*="export"]'
 
     # Verification
-    LOGGED_IN_INDICATOR = '.siteHeader__personalNav, .profileMenu'
+    LOGGED_IN_INDICATOR = '.siteHeader__personalNav, .profileMenu, .dropdown--profileMenu'
 
 
 class StoryGraphSelectors:
