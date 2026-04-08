@@ -68,9 +68,9 @@ class StoryGraphSelectors:
 
     # Read history page: /read_instances/new?book_id={uuid}
     READ_INSTANCES_URL = "https://app.thestorygraph.com/read_instances/new"
-    READ_FINISH_DAY = 'select[name="new_read_instance[finish_day]"]'
-    READ_FINISH_MONTH = 'select[name="new_read_instance[finish_month]"]'
-    READ_FINISH_YEAR = 'select[name="new_read_instance[finish_year]"]'
+    READ_FINISH_DAY = 'select[name="new_read_instance[day]"]'
+    READ_FINISH_MONTH = 'select[name="new_read_instance[month]"]'
+    READ_FINISH_YEAR = 'select[name="new_read_instance[year]"]'
     READ_START_DAY = 'select[name="new_read_instance[start_day]"]'
     READ_START_MONTH = 'select[name="new_read_instance[start_month]"]'
     READ_START_YEAR = 'select[name="new_read_instance[start_year]"]'
