@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
@@ -10,9 +11,17 @@ from .exceptions import StateError
 from .models import BookRecord, DeltaResult
 
 
+def _data_dir() -> Path:
+    """Get the data directory, preferring local ./data over /data."""
+    local = Path("data/state")
+    if local.exists() or not Path("/data").exists():
+        return local
+    return Path("/data/state")
+
+
 def get_state_file(account_name: str) -> Path:
     """Get state file path for a specific account."""
-    return Path(f"/data/state/last_sync_state_{account_name}.json")
+    return _data_dir() / f"last_sync_state_{account_name}.json"
 
 
 def calculate_csv_hash(filepath: str) -> str:
