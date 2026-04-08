@@ -280,46 +280,111 @@ def main() -> int:
         return 1
 
 
-def seed_state(csv_path: str, account_name: str = "default") -> int:
+def _load_storygraph_isbns(storygraph_csv: str) -> tuple[set, set]:
     """
-    Seed the state file from an existing Goodreads CSV export.
+    Parse a StoryGraph export CSV and return sets of ISBNs and lowercase titles.
 
-    Marks all books in the CSV as already synced, so that subsequent
-    runs only process new or changed books. Use this after the initial
-    bulk CSV import has already been done on StoryGraph.
+    Returns:
+        Tuple of (isbn_set, title_set)
+    """
+    import csv
+    isbns = set()
+    titles = set()
+    with open(storygraph_csv, "r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            isbn = row.get("ISBN/UID", "").strip()
+            title = row.get("Title", "").strip()
+            if isbn:
+                isbns.add(isbn)
+            if title:
+                titles.add(title.lower())
+    return isbns, titles
+
+
+def seed_state(goodreads_csv: str, storygraph_csv: str = None, account_name: str = "default") -> int:
+    """
+    Seed the state file by comparing Goodreads and StoryGraph exports.
+
+    If a StoryGraph CSV is provided, only books found on both platforms
+    (matched by ISBN or title) are marked as synced. Unmatched Goodreads
+    books are left as "new" so they'll be synced on the next run.
+
+    If no StoryGraph CSV is provided, ALL Goodreads books are marked as
+    synced (use this only if you're sure everything is already on StoryGraph).
 
     Args:
-        csv_path: Path to a Goodreads CSV export file
+        goodreads_csv: Path to a Goodreads CSV export
+        storygraph_csv: Path to a StoryGraph CSV export (from /user-export)
         account_name: Account name to seed state for
 
     Returns:
         Exit code (0 on success, 1 on failure)
     """
     try:
-        validate_csv(csv_path)
-        csv_books = parse_csv_to_books(csv_path)
-        csv_hash = calculate_csv_hash(csv_path)
+        validate_csv(goodreads_csv)
+        csv_books = parse_csv_to_books(goodreads_csv)
+        csv_hash = calculate_csv_hash(goodreads_csv)
 
-        # Build per-book state marking everything as synced
-        books = {}
+        # Load StoryGraph data for comparison if provided
+        sg_isbns = set()
+        sg_titles = set()
+        if storygraph_csv:
+            sg_isbns, sg_titles = _load_storygraph_isbns(storygraph_csv)
+            print(f"StoryGraph export: {len(sg_isbns)} books with ISBN, {len(sg_titles)} total")
+
+        # Build per-book state
+        books_synced = {}
+        books_new = []
         for book_id, book in csv_books.items():
-            books[book_id] = {
-                "row_hash": book.row_hash(),
-                "last_synced": "seeded",
-                "status": "synced",
-            }
+            if storygraph_csv:
+                # Check if this book exists on StoryGraph
+                matched = False
+                if book.isbn13 and book.isbn13 in sg_isbns:
+                    matched = True
+                elif book.isbn and book.isbn in sg_isbns:
+                    matched = True
+                elif book.title.lower() in sg_titles:
+                    matched = True
+
+                if matched:
+                    books_synced[book_id] = {
+                        "row_hash": book.row_hash(),
+                        "last_synced": "seeded",
+                        "status": "synced",
+                    }
+                else:
+                    books_new.append(book)
+            else:
+                # No StoryGraph CSV — mark everything as synced
+                books_synced[book_id] = {
+                    "row_hash": book.row_hash(),
+                    "last_synced": "seeded",
+                    "status": "synced",
+                }
 
         save_state(
             csv_hash=csv_hash,
             book_count=len(csv_books),
             account_name=account_name,
-            books=books,
+            books=books_synced,
             failed_books={},
         )
 
-        print(f"State seeded for account '{account_name}': {len(csv_books)} books marked as synced")
+        print(f"\nGoodreads books: {len(csv_books)}")
+        print(f"Marked as synced: {len(books_synced)}")
+        print(f"New (will sync next run): {len(books_new)}")
         print(f"CSV hash: {csv_hash}")
-        print(f"Next sync will only process new or changed books.")
+
+        if books_new and len(books_new) <= 20:
+            print(f"\nNew books to sync:")
+            for b in books_new:
+                print(f"  - {b.title} by {b.author}")
+        elif books_new:
+            print(f"\nFirst 20 new books to sync:")
+            for b in books_new[:20]:
+                print(f"  - {b.title} by {b.author}")
+            print(f"  ... and {len(books_new) - 20} more")
+
         return 0
 
     except Exception as e:
@@ -331,8 +396,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Goodreads to StoryGraph sync")
     parser.add_argument(
         "--seed-state",
-        metavar="CSV_PATH",
-        help="Seed state from a Goodreads CSV export (marks all books as already synced)",
+        metavar="GOODREADS_CSV",
+        help="Seed state from a Goodreads CSV export",
+    )
+    parser.add_argument(
+        "--storygraph-csv",
+        metavar="STORYGRAPH_CSV",
+        help="StoryGraph export CSV (from /user-export) for comparison. "
+             "Only books found on both platforms are marked as synced.",
     )
     parser.add_argument(
         "--account",
@@ -343,6 +414,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.seed_state:
-        sys.exit(seed_state(args.seed_state, args.account))
+        sys.exit(seed_state(args.seed_state, args.storygraph_csv, args.account))
     else:
         sys.exit(main())
