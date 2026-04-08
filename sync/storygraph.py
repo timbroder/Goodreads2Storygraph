@@ -297,32 +297,59 @@ class StoryGraphClient:
 
         raise BookSyncError(f"Could not set shelf to '{shelf}' for book {uuid}")
 
+    def _navigate_to_review_page(self, uuid: str) -> bool:
+        """Navigate to the review page for a book.
+
+        First goes to the book page, then clicks the "add review" link
+        which includes the correct return_to parameter. Direct URL
+        navigation to /reviews/new can redirect back to the book page.
+
+        Returns True if successfully on the review page.
+        """
+        book_url = f"{StoryGraphSelectors.BOOK_PAGE_URL}/{uuid}"
+        self.page.goto(book_url)
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_timeout(1000)
+
+        # Click the "add review" link on the book page
+        review_link = self.page.locator('a:has-text("add review"), a:has-text("edit review")').first
+        try:
+            if review_link.count() > 0 and review_link.is_visible():
+                review_link.click()
+                self.page.wait_for_load_state("networkidle")
+                self.page.wait_for_timeout(1000)
+
+                # Verify we're on the review page
+                if "reviews/" in self.page.url:
+                    return True
+        except Exception as e:
+            logger.debug(f"Could not click review link: {e}")
+
+        # Fallback: try direct URL
+        review_url = f"{StoryGraphSelectors.REVIEW_URL}?book_id={uuid}&return_to=/books/{uuid}"
+        self.page.goto(review_url)
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_timeout(1000)
+        return "reviews/" in self.page.url
+
     def _set_rating(self, uuid: str, rating: int) -> None:
         """Navigate to review page and set star rating."""
         if rating < 1 or rating > 5:
             return
 
-        review_url = f"{StoryGraphSelectors.REVIEW_URL}?book_id={uuid}"
-        self.page.goto(review_url)
-        self.page.wait_for_load_state("networkidle")
-        self.page.wait_for_timeout(1500)
+        if not self._navigate_to_review_page(uuid):
+            self._save_screenshot(f"rating_no_review_page_{uuid[:8]}")
+            logger.warning(f"Could not reach review page for {uuid}")
+            return
 
         try:
-            # Set integer part of rating
             int_select = self.page.locator(StoryGraphSelectors.RATING_INTEGER_SELECT)
             if int_select.count() > 0:
                 int_select.select_option(str(rating))
                 logger.debug(f"Set rating to {rating}")
             else:
-                # The page might have redirected (e.g. to edit review)
-                # Try waiting for the select to appear
-                try:
-                    self.page.wait_for_selector(StoryGraphSelectors.RATING_INTEGER_SELECT, timeout=5000)
-                    self.page.locator(StoryGraphSelectors.RATING_INTEGER_SELECT).select_option(str(rating))
-                    logger.debug(f"Set rating to {rating} (after wait)")
-                except Exception:
-                    self._save_screenshot(f"rating_not_found_{uuid[:8]}")
-                    logger.warning(f"Rating select not found at {self.page.url}")
+                self._save_screenshot(f"rating_not_found_{uuid[:8]}")
+                logger.warning(f"Rating select not found at {self.page.url}")
         except Exception as e:
             logger.warning(f"Could not set rating: {e}")
 
@@ -332,12 +359,10 @@ class StoryGraphClient:
             return
 
         # Navigate to review page if we're not already there
-        current_url = self.page.url
-        expected_url = f"{StoryGraphSelectors.REVIEW_URL}?book_id={uuid}"
-        if "reviews/new" not in current_url or uuid not in current_url:
-            self.page.goto(expected_url)
-            self.page.wait_for_load_state("networkidle")
-            self.page.wait_for_timeout(500)
+        if "reviews/" not in self.page.url:
+            if not self._navigate_to_review_page(uuid):
+                logger.warning(f"Could not reach review page for {uuid}")
+                return
 
             # Re-set rating if we navigated away
             if rating > 0:
