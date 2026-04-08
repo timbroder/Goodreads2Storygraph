@@ -263,31 +263,35 @@ class StoryGraphClient:
             except Exception as e:
                 logger.debug(f"Dropdown shelf change failed: {e}")
 
-        # Case 2: Book is NOT in library (has "Add to your To-Read Pile")
-        add_button = self.page.locator('button:has-text("Add to your To-Read Pile")').first
+        # Case 2: Book is NOT in library yet
+        # The main button is button.read-status-button with text "to read"
+        # (no button.read-status-label exists for non-library books)
+        add_button = self.page.locator('button.read-status-button:visible').first
         try:
-            if add_button.count() > 0 and add_button.is_visible():
+            if add_button.count() > 0:
                 if shelf == "to read":
                     add_button.click()
                     self.page.wait_for_timeout(1500)
-                    logger.debug("Added to To-Read Pile")
+                    logger.debug("Added to To-Read")
                     return
                 else:
-                    # The dropdown next to "Add to your To-Read Pile" has buttons like
-                    # "Mark as read", "Mark as currently reading", "Mark as did not finish"
-                    expand_btn = self.page.locator('div.dropdown button.expand-dropdown-button').first
+                    # Open dropdown for other shelf options
+                    expand_btn = self.page.locator('div.dropdown button.expand-dropdown-button:visible').first
                     if expand_btn.count() > 0:
                         expand_btn.click()
                         self.page.wait_for_timeout(500)
 
-                        # Try both naming patterns: "Mark as X" and just "X"
-                        for pattern in [f'Mark as {target}', target]:
-                            option = self.page.locator(f'button:has-text("{pattern}")').first
-                            if option.count() > 0 and option.is_visible():
-                                option.click()
-                                self.page.wait_for_timeout(1500)
-                                logger.debug(f"Added to shelf: {shelf}")
-                                return
+                        # Try multiple naming patterns
+                        for pattern in [target, f'Mark as {target}', f'Mark book as {target}']:
+                            option = self.page.locator(f'button.read-status-button:has-text("{pattern}"):visible').first
+                            try:
+                                if option.count() > 0:
+                                    option.click()
+                                    self.page.wait_for_timeout(1500)
+                                    logger.debug(f"Added to shelf: {shelf}")
+                                    return
+                            except Exception:
+                                continue
         except Exception as e:
             logger.debug(f"Add-to-library failed: {e}")
 
