@@ -208,6 +208,118 @@ def sync_account(account: AccountConfig, config: Config, browser: Browser, logge
         return False
 
 
+def sync_from_csv(csv_path: str, account_name: str = "default") -> int:
+    """
+    Run the sync using a local Goodreads CSV, skipping the Goodreads export step.
+
+    This is useful for local testing or when Goodreads login is broken.
+    Reads StoryGraph credentials from config to perform the actual sync.
+    """
+    import os
+    os.environ.setdefault("DRY_RUN", "false")
+
+    try:
+        config = load_config()
+        logger, run_log_path = setup_logging(config.log_level)
+        logger.info(f"Syncing from local CSV: {csv_path}")
+
+        # Find the account
+        account = None
+        for acc in config.accounts:
+            if acc.name == account_name:
+                account = acc
+                break
+        if not account:
+            account = config.accounts[0]
+            logger.info(f"Using account: {account.name}")
+
+        # Validate CSV
+        validate_csv(csv_path)
+        book_count = count_books(csv_path)
+        logger.info(f"CSV validated: {book_count} books")
+
+        # Check for changes
+        skip, reason = should_skip_upload(csv_path, account.name, config.force_sync)
+        if skip:
+            logger.info(f"Skipping sync: {reason}")
+            return 0
+        logger.info(reason)
+
+        # Compute delta
+        csv_books = parse_csv_to_books(csv_path)
+        state = load_state(account.name)
+        delta = compute_delta(csv_books, state, max_retries=config.max_retries)
+
+        logger.info(f"Delta: {len(delta.new_books)} new, "
+                     f"{len(delta.changed_books)} changed, "
+                     f"{delta.unchanged_count} unchanged, "
+                     f"{len(delta.removed_book_ids)} removed, "
+                     f"{len(delta.retryable_books)} retryable")
+
+        if not delta.has_changes and not config.force_sync:
+            logger.info("No books to sync")
+            csv_hash = calculate_csv_hash(csv_path)
+            save_state(csv_hash=csv_hash, book_count=book_count, account_name=account.name)
+            return 0
+
+        if config.dry_run:
+            logger.info(f"DRY RUN: Would sync {len(delta.sync_books)} books")
+            for book in delta.sync_books[:20]:
+                logger.info(f"  - {book.title} by {book.author} [{book.exclusive_shelf}]")
+            if len(delta.sync_books) > 20:
+                logger.info(f"  ... and {len(delta.sync_books) - 20} more")
+        else:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=config.headless)
+                try:
+                    storygraph_client = StoryGraphClient(
+                        browser,
+                        account.storygraph_email,
+                        account.storygraph_password,
+                        account.name
+                    )
+                    storygraph_client.login()
+
+                    books_to_sync = delta.sync_books
+                    if config.max_sync_items and len(books_to_sync) > config.max_sync_items:
+                        logger.info(f"Limiting to {config.max_sync_items} books")
+                        books_to_sync = books_to_sync[:config.max_sync_items]
+
+                    synced = 0
+                    failed = 0
+                    for i, book in enumerate(books_to_sync, 1):
+                        logger.info(f"[{i}/{len(books_to_sync)}] {book.title}")
+                        try:
+                            storygraph_client.add_book(book)
+                            mark_book_synced(account.name, book.book_id, book.row_hash())
+                            synced += 1
+                        except BookNotFoundError:
+                            mark_book_failed(account.name, book.book_id, book.row_hash(), "not found")
+                            failed += 1
+                            logger.warning(f"Not found: {book.title}")
+                        except BookSyncError as e:
+                            mark_book_failed(account.name, book.book_id, book.row_hash(), str(e))
+                            failed += 1
+                            logger.error(f"Failed: {book.title}: {e}")
+
+                        if i < len(books_to_sync):
+                            storygraph_client.wait_with_jitter(config.sync_delay_min, config.sync_delay_max)
+
+                    storygraph_client.close()
+                    logger.info(f"Results: {synced} synced, {failed} failed")
+                finally:
+                    browser.close()
+
+        csv_hash = calculate_csv_hash(csv_path)
+        save_state(csv_hash=csv_hash, book_count=book_count, account_name=account.name)
+        return 0
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     """
     Main sync workflow supporting multiple accounts.
@@ -406,6 +518,12 @@ if __name__ == "__main__":
              "Only books found on both platforms are marked as synced.",
     )
     parser.add_argument(
+        "--csv",
+        metavar="CSV_PATH",
+        help="Use a local Goodreads CSV instead of exporting from Goodreads. "
+             "Skips the Goodreads login/export step entirely.",
+    )
+    parser.add_argument(
         "--account",
         default="default",
         help="Account name to operate on (default: 'default')",
@@ -415,5 +533,7 @@ if __name__ == "__main__":
 
     if args.seed_state:
         sys.exit(seed_state(args.seed_state, args.storygraph_csv, args.account))
+    elif args.csv:
+        sys.exit(sync_from_csv(args.csv, args.account))
     else:
         sys.exit(main())
