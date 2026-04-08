@@ -1,5 +1,6 @@
 """Main entry point for Goodreads to StoryGraph sync."""
 
+import argparse
 import logging
 import sys
 from playwright.sync_api import Browser, sync_playwright
@@ -279,5 +280,69 @@ def main() -> int:
         return 1
 
 
+def seed_state(csv_path: str, account_name: str = "default") -> int:
+    """
+    Seed the state file from an existing Goodreads CSV export.
+
+    Marks all books in the CSV as already synced, so that subsequent
+    runs only process new or changed books. Use this after the initial
+    bulk CSV import has already been done on StoryGraph.
+
+    Args:
+        csv_path: Path to a Goodreads CSV export file
+        account_name: Account name to seed state for
+
+    Returns:
+        Exit code (0 on success, 1 on failure)
+    """
+    try:
+        validate_csv(csv_path)
+        csv_books = parse_csv_to_books(csv_path)
+        csv_hash = calculate_csv_hash(csv_path)
+
+        # Build per-book state marking everything as synced
+        books = {}
+        for book_id, book in csv_books.items():
+            books[book_id] = {
+                "row_hash": book.row_hash(),
+                "last_synced": "seeded",
+                "status": "synced",
+            }
+
+        save_state(
+            csv_hash=csv_hash,
+            book_count=len(csv_books),
+            account_name=account_name,
+            books=books,
+            failed_books={},
+        )
+
+        print(f"State seeded for account '{account_name}': {len(csv_books)} books marked as synced")
+        print(f"CSV hash: {csv_hash}")
+        print(f"Next sync will only process new or changed books.")
+        return 0
+
+    except Exception as e:
+        print(f"Error seeding state: {e}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description="Goodreads to StoryGraph sync")
+    parser.add_argument(
+        "--seed-state",
+        metavar="CSV_PATH",
+        help="Seed state from a Goodreads CSV export (marks all books as already synced)",
+    )
+    parser.add_argument(
+        "--account",
+        default="default",
+        help="Account name to operate on (default: 'default')",
+    )
+
+    args = parser.parse_args()
+
+    if args.seed_state:
+        sys.exit(seed_state(args.seed_state, args.account))
+    else:
+        sys.exit(main())
