@@ -234,20 +234,6 @@ class StoryGraphClient:
         # Case 1: Book is already in library (has status label + dropdown)
         if status_btn.count() > 0:
             try:
-                # Click the "Expand dropdown menu" chevron button
-                expand_btn = self.page.locator('div.dropdown button:has-text("Expand dropdown menu")').first
-                if expand_btn.count() > 0:
-                    expand_btn.click()
-                    self.page.wait_for_timeout(500)
-
-                    # Click the target shelf option (exact text match)
-                    option = self.page.locator(f'div.dropdown button:text-is("{target}")').first
-                    if option.count() > 0 and option.is_visible():
-                        option.click()
-                        self.page.wait_for_timeout(1500)
-                        logger.debug(f"Changed shelf to: {shelf}")
-                        return
-
                 # Shortcut: "Mark as finished" for read shelf
                 if shelf == "read":
                     finished_btn = self.page.locator('button:has-text("Mark as finished"), button.mark-as-finished-btn').first
@@ -256,6 +242,24 @@ class StoryGraphClient:
                         self.page.wait_for_timeout(1500)
                         logger.debug("Marked as finished (read)")
                         return
+
+                # Click the chevron to open dropdown
+                expand_btn = self.page.locator('div.dropdown button.expand-dropdown-button').first
+                if expand_btn.count() > 0:
+                    expand_btn.click()
+                    self.page.wait_for_timeout(500)
+
+                    # Try multiple naming patterns for the shelf button
+                    for pattern in [target, f'Mark book as {target}', f'Mark as {target}']:
+                        option = self.page.locator(f'button:text-is("{pattern}")').first
+                        try:
+                            if option.count() > 0 and option.is_visible():
+                                option.click()
+                                self.page.wait_for_timeout(1500)
+                                logger.debug(f"Changed shelf to: {shelf}")
+                                return
+                        except Exception:
+                            continue
             except Exception as e:
                 logger.debug(f"Dropdown shelf change failed: {e}")
 
@@ -269,17 +273,21 @@ class StoryGraphClient:
                     logger.debug("Added to To-Read Pile")
                     return
                 else:
-                    # Open the dropdown next to it for other shelf options
-                    expand_btn = self.page.locator('div.dropdown button:has-text("Expand dropdown menu")').first
+                    # The dropdown next to "Add to your To-Read Pile" has buttons like
+                    # "Mark as read", "Mark as currently reading", "Mark as did not finish"
+                    expand_btn = self.page.locator('div.dropdown button.expand-dropdown-button').first
                     if expand_btn.count() > 0:
                         expand_btn.click()
                         self.page.wait_for_timeout(500)
-                        option = self.page.locator(f'div.dropdown button:text-is("{target}")').first
-                        if option.count() > 0 and option.is_visible():
-                            option.click()
-                            self.page.wait_for_timeout(1500)
-                            logger.debug(f"Added to shelf: {shelf}")
-                            return
+
+                        # Try both naming patterns: "Mark as X" and just "X"
+                        for pattern in [f'Mark as {target}', target]:
+                            option = self.page.locator(f'button:has-text("{pattern}")').first
+                            if option.count() > 0 and option.is_visible():
+                                option.click()
+                                self.page.wait_for_timeout(1500)
+                                logger.debug(f"Added to shelf: {shelf}")
+                                return
         except Exception as e:
             logger.debug(f"Add-to-library failed: {e}")
 
