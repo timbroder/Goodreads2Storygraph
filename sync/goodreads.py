@@ -122,9 +122,47 @@ class GoodreadsClient:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             download_path = artifacts_dir() / f"goodreads_export_{self.account_name}_{timestamp}.csv"
 
-            logger.info("Triggering export")
+            # Click export button to start generation
+            logger.info("Triggering export generation")
+            self.page.click(GoodreadsSelectors.EXPORT_BUTTON)
+            self.page.wait_for_timeout(3000)
+
+            # Goodreads generates the export server-side. Poll for the download
+            # link to appear (it may take 1-3 minutes for large libraries).
+            logger.info("Waiting for export to be generated (this can take a few minutes)...")
+            max_wait = 300  # 5 minutes max
+            poll_interval = 5
+            elapsed = 0
+            while elapsed < max_wait:
+                # Look for a download link (CSV link that appears when ready)
+                download_link = self.page.locator('a[href*="review_porter"]')
+                if download_link.count() > 0 and download_link.first.is_visible():
+                    logger.info("Export ready, downloading")
+                    break
+
+                # Also check for a direct "Your export" link
+                export_link = self.page.locator('a:has-text("Your export")')
+                if export_link.count() > 0 and export_link.first.is_visible():
+                    logger.info("Export ready, downloading")
+                    download_link = export_link
+                    break
+
+                elapsed += poll_interval
+                if elapsed % 30 == 0:
+                    logger.info(f"Still waiting for export... ({elapsed}s)")
+                self.page.wait_for_timeout(poll_interval * 1000)
+                # Reload to check for updated status
+                self.page.reload()
+                self.page.wait_for_load_state("networkidle")
+            else:
+                self._save_screenshot("export_timeout")
+                raise GoodreadsExportError(
+                    f"Export generation timed out after {max_wait}s"
+                )
+
+            # Download the file
             with self.page.expect_download(timeout=60000) as download_info:
-                self.page.click(GoodreadsSelectors.EXPORT_BUTTON)
+                download_link.first.click()
 
             download = download_info.value
             download.save_as(str(download_path))
