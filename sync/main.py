@@ -3,7 +3,7 @@
 import argparse
 import logging
 import sys
-from playwright.sync_api import Browser, sync_playwright
+from playwright.sync_api import Browser, Playwright, sync_playwright
 
 from .config import AccountConfig, Config, load_config
 from .exceptions import (
@@ -14,6 +14,7 @@ from .exceptions import (
     StoryGraphUploadError,
     SyncError,
 )
+from .browser import launch_browser
 from .goodreads import GoodreadsClient
 from .isbn_lookup import enrich_csv_with_isbns
 from .logging_setup import setup_logging
@@ -284,7 +285,7 @@ def sync_from_csv(csv_path: str, account_name: str = "default") -> int:
         else:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=config.headless)
+                browser = launch_browser(playwright, headless=config.headless)
                 try:
                     storygraph_client = StoryGraphClient(
                         browser,
@@ -362,7 +363,7 @@ def main() -> int:
         # Initialize Playwright
         logger.info("Initializing browser")
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=config.headless)
+            browser = launch_browser(playwright, headless=config.headless)
 
             try:
                 results = {}

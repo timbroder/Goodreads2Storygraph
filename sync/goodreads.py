@@ -8,6 +8,7 @@ from typing import Optional
 
 from playwright.sync_api import Browser, Page
 
+from .browser import STEALTH_USER_AGENT
 from .exceptions import GoodreadsExportError, PlaywrightError
 from .paths import artifacts_dir, state_dir
 from .selectors import GoodreadsSelectors
@@ -47,7 +48,10 @@ class GoodreadsClient:
             # Try to use stored session first
             if self.storage_state_path.exists():
                 logger.info("Using stored Goodreads session")
-                context = self.browser.new_context(storage_state=str(self.storage_state_path))
+                context = self.browser.new_context(
+                    storage_state=str(self.storage_state_path),
+                    user_agent=STEALTH_USER_AGENT,
+                )
                 self.page = context.new_page()
 
                 # Verify session is still valid
@@ -62,9 +66,14 @@ class GoodreadsClient:
                 self.page.close()
                 context.close()
 
-            # Fresh login
-            context = self.browser.new_context()
+            # Fresh login with stealth user-agent
+            context = self.browser.new_context(user_agent=STEALTH_USER_AGENT)
             self.page = context.new_page()
+
+            # Remove navigator.webdriver flag that reveals automation
+            self.page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            """)
 
             # Step 1: Go to Goodreads sign-in page
             logger.info("Navigating to Goodreads sign-in")
