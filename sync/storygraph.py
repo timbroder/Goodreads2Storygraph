@@ -295,7 +295,7 @@ class StoryGraphClient:
         except Exception as e:
             logger.debug(f"Add-to-library approach failed: {e}")
 
-        logger.warning(f"Could not set shelf to '{shelf}' — book may already be on correct shelf")
+        raise BookSyncError(f"Could not set shelf to '{shelf}' for book {uuid}")
 
     def _set_rating(self, uuid: str, rating: int) -> None:
         """Navigate to review page and set star rating."""
