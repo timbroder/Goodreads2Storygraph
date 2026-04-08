@@ -305,7 +305,7 @@ class StoryGraphClient:
         review_url = f"{StoryGraphSelectors.REVIEW_URL}?book_id={uuid}"
         self.page.goto(review_url)
         self.page.wait_for_load_state("networkidle")
-        self.page.wait_for_timeout(500)
+        self.page.wait_for_timeout(1500)
 
         try:
             # Set integer part of rating
@@ -314,7 +314,15 @@ class StoryGraphClient:
                 int_select.select_option(str(rating))
                 logger.debug(f"Set rating to {rating}")
             else:
-                logger.warning("Rating integer select not found")
+                # The page might have redirected (e.g. to edit review)
+                # Try waiting for the select to appear
+                try:
+                    self.page.wait_for_selector(StoryGraphSelectors.RATING_INTEGER_SELECT, timeout=5000)
+                    self.page.locator(StoryGraphSelectors.RATING_INTEGER_SELECT).select_option(str(rating))
+                    logger.debug(f"Set rating to {rating} (after wait)")
+                except Exception:
+                    self._save_screenshot(f"rating_not_found_{uuid[:8]}")
+                    logger.warning(f"Rating select not found at {self.page.url}")
         except Exception as e:
             logger.warning(f"Could not set rating: {e}")
 

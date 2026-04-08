@@ -380,12 +380,32 @@ class TestShouldSkipUpload:
             "last_sync_timestamp": "2024-01-01",
             "last_book_count": 1,
             "account_name": "test",
-            "books": {},
+            "books": {"1": {"row_hash": "h1", "status": "synced"}},
             "failed_books": {},
         }))
         with patch("sync.state.get_state_file", return_value=state_file):
             skip, reason = should_skip_upload(str(csv_file), "test")
         assert skip is True
+
+    def test_csv_unchanged_but_unsynced_books(self, tmp_path):
+        """Don't skip when CSV is unchanged but books remain unsynced."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Title\nBook\n")
+        csv_hash = calculate_csv_hash(str(csv_file))
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({
+            "schema_version": 2,
+            "last_csv_hash": csv_hash,
+            "last_sync_timestamp": "2024-01-01",
+            "last_book_count": 10,
+            "account_name": "test",
+            "books": {"1": {"row_hash": "h1", "status": "synced"}},
+            "failed_books": {},
+        }))
+        with patch("sync.state.get_state_file", return_value=state_file):
+            skip, reason = should_skip_upload(str(csv_file), "test")
+        assert skip is False
+        assert "unsynced" in reason
 
     def test_csv_unchanged_v1_state(self, tmp_path):
         """Test backward compatibility with v1 state format."""
@@ -393,14 +413,16 @@ class TestShouldSkipUpload:
         csv_file.write_text("Title\nBook\n")
         csv_hash = calculate_csv_hash(str(csv_file))
         state_file = tmp_path / "state.json"
+        # v1 state has no books dict — migration creates empty books={},
+        # and last_book_count=1 with 0 synced means unsynced remain
         state_file.write_text(json.dumps({
             "last_hash": csv_hash,
             "last_sync_timestamp": "2024-01-01",
-            "last_book_count": 1,
+            "last_book_count": 0,
         }))
         with patch("sync.state.get_state_file", return_value=state_file):
             skip, reason = should_skip_upload(str(csv_file), "test")
-        # After migration, last_csv_hash is set from last_hash
+        # v1 migrated: 0 book_count, 0 synced — should skip
         assert skip is True
 
     def test_csv_changed(self, tmp_path):

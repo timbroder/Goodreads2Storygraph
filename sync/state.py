@@ -251,6 +251,15 @@ def should_skip_upload(csv_path: str, account_name: str, force_sync: bool = Fals
 
     last_hash = state.get("last_csv_hash") or state.get("last_hash", "")
     if last_hash == current_hash:
+        # Even if CSV is unchanged, check if there are unsynced or failed books
+        # that still need processing (e.g. from a previous partial run)
+        synced_count = len(state.get("books", {}))
+        failed_count = len(state.get("failed_books", {}))
+        book_count = state.get("last_book_count", 0)
+        if synced_count < book_count or failed_count > 0:
+            unsynced = book_count - synced_count
+            return False, (f"CSV unchanged but {unsynced} books unsynced, "
+                           f"{failed_count} failed — continuing")
         return True, f"CSV unchanged since {state.get('last_sync_timestamp', 'unknown')}"
 
     return False, "CSV has changed"
