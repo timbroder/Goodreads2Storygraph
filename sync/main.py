@@ -6,10 +6,12 @@ from playwright.sync_api import Browser, sync_playwright
 
 from .config import AccountConfig, Config, load_config
 from .exceptions import GoodreadsExportError, StateError, StoryGraphUploadError, SyncError
+from .delta import compute_delta, load_goodreads_books
 from .goodreads import GoodreadsClient
 from .isbn_lookup import enrich_csv_with_isbns
+from .library_state import LibraryDatabase
 from .logging_setup import setup_logging
-from .state import calculate_csv_hash, load_state, save_state, should_skip_upload
+from .state import calculate_csv_hash, load_state, save_state
 from .storygraph import StoryGraphClient
 from .transform import count_books, validate_csv
 
@@ -28,6 +30,9 @@ def sync_account(account: AccountConfig, config: Config, browser: Browser, logge
         True if sync succeeded, False if failed
     """
     account_prefix = f"[{account.name}]"
+    database = LibraryDatabase()
+    goodreads_client = None
+    storygraph_client = None
 
     try:
         logger.info("=" * 60)
@@ -87,54 +92,97 @@ def sync_account(account: AccountConfig, config: Config, browser: Browser, logge
             if book_count > config.max_sync_items:
                 logger.warning(
                     f"{account_prefix} MAX_SYNC_ITEMS set to {config.max_sync_items}, "
-                    f"but CSV has {book_count} books. This may cause issues with upload."
+                    f"but CSV has {book_count} books. The limit is not enforced in phase 1 delta sync."
                 )
 
-        # Step 3: Check if upload needed
+        # Step 3: Seed local StoryGraph baseline if needed
         logger.info("-" * 60)
-        logger.info(f"{account_prefix} STEP 3: Check if upload needed")
+        logger.info(f"{account_prefix} STEP 3: Seed local StoryGraph baseline")
         logger.info("-" * 60)
 
-        skip_upload, reason = should_skip_upload(csv_path, account.name, config.force_sync)
-
-        if skip_upload:
-            logger.info(f"{account_prefix} Skipping upload: {reason}")
-            logger.info("=" * 60)
-            logger.info(f"{account_prefix} Sync complete (no upload needed)")
-            logger.info("=" * 60)
-            return True
-
-        logger.info(f"{account_prefix} Upload needed: {reason}")
-
-        # Step 4: Upload to StoryGraph
-        if config.dry_run:
-            logger.info("-" * 60)
-            logger.info(f"{account_prefix} DRY RUN: Skipping upload to StoryGraph")
-            logger.info("-" * 60)
+        current_books = database.get_books(account.name)
+        if current_books:
+            logger.info(f"{account_prefix} Local library database already seeded with {len(current_books)} books")
         else:
-            logger.info("-" * 60)
-            logger.info(f"{account_prefix} STEP 4: Upload to StoryGraph")
-            logger.info("-" * 60)
-
+            logger.info(f"{account_prefix} Local library database is empty; seeding from StoryGraph")
             storygraph_client = StoryGraphClient(
                 browser,
                 account.storygraph_email,
                 account.storygraph_password,
                 account.name
             )
-
             storygraph_client.login()
-            storygraph_client.upload_csv(csv_path)
-            storygraph_client.close()
+            seeded_count = storygraph_client.seed_library(account.name, database)
+            logger.info(f"{account_prefix} Seeded local StoryGraph baseline with {seeded_count} books")
+            current_books = database.get_books(account.name)
 
-            logger.info(f"{account_prefix} Upload complete")
+        # Step 4: Compare Goodreads export with local baseline
+        logger.info("-" * 60)
+        logger.info(f"{account_prefix} STEP 4: Compute delta")
+        logger.info("-" * 60)
 
-            # Step 5: Update state
+        csv_hash = calculate_csv_hash(csv_path)
+        previous_hash = database.get_metadata(account.name, "last_goodreads_hash")
+        if previous_hash == csv_hash and not config.force_sync:
+            logger.info(f"{account_prefix} Skipping sync: Goodreads export hash unchanged")
+            logger.info("=" * 60)
+            logger.info(f"{account_prefix} Sync complete (no changes detected)")
+            logger.info("=" * 60)
+            return True
+
+        desired_books = load_goodreads_books(csv_path)
+        plan = compute_delta(desired_books, current_books)
+        logger.info(f"{account_prefix} Goodreads books in supported shelves: {len(desired_books)}")
+        logger.info(f"{account_prefix} Books to add: {len(plan.additions)}")
+        logger.info(f"{account_prefix} Books to update: {len(plan.updates)}")
+
+        if plan.total_changes == 0:
+            database.set_metadata(account.name, "last_goodreads_hash", csv_hash)
+            database.set_metadata(account.name, "last_goodreads_book_count", str(book_count))
+            save_state(csv_hash, book_count, account.name)
+            logger.info(f"{account_prefix} No per-book changes needed")
+            logger.info("=" * 60)
+            logger.info(f"{account_prefix} Sync complete")
+            logger.info("=" * 60)
+            return True
+
+        # Step 5: Apply delta to StoryGraph
+        if config.dry_run:
             logger.info("-" * 60)
-            logger.info(f"{account_prefix} STEP 5: Update state")
+            logger.info(f"{account_prefix} DRY RUN: Skipping StoryGraph writes")
+            logger.info("-" * 60)
+            logger.info(
+                f"{account_prefix} Planned changes: {len(plan.additions)} additions, "
+                f"{len(plan.updates)} updates"
+            )
+        else:
+            logger.info("-" * 60)
+            logger.info(f"{account_prefix} STEP 5: Apply StoryGraph delta")
             logger.info("-" * 60)
 
-            csv_hash = calculate_csv_hash(csv_path)
+            if storygraph_client is None:
+                storygraph_client = StoryGraphClient(
+                    browser,
+                    account.storygraph_email,
+                    account.storygraph_password,
+                    account.name
+                )
+                storygraph_client.login()
+
+            added, updated = storygraph_client.apply_delta(
+                account.name,
+                database,
+                plan.additions,
+                plan.updates,
+            )
+            logger.info(f"{account_prefix} Delta applied: {added} additions, {updated} updates")
+
+            logger.info("-" * 60)
+            logger.info(f"{account_prefix} STEP 6: Update state")
+            logger.info("-" * 60)
+
+            database.set_metadata(account.name, "last_goodreads_hash", csv_hash)
+            database.set_metadata(account.name, "last_goodreads_book_count", str(book_count))
             save_state(csv_hash, book_count, account.name)
 
             logger.info(f"{account_prefix} State updated successfully")
@@ -156,6 +204,11 @@ def sync_account(account: AccountConfig, config: Config, browser: Browser, logge
     except Exception as e:
         logger.exception(f"{account_prefix} Unexpected error: {e}")
         return False
+    finally:
+        if goodreads_client:
+            goodreads_client.close()
+        if storygraph_client:
+            storygraph_client.close()
 
 
 def main() -> int:

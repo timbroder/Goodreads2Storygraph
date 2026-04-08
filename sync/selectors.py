@@ -34,8 +34,10 @@ class StoryGraphSelectors:
 
     # Import page
     IMPORT_URL = "https://app.thestorygraph.com/import-goodreads"
-    FILE_INPUT = '#goodreads_export_csv, input[name="goodreads_export_csv"]'
+    SEARCH_URL = "https://app.thestorygraph.com/search"
+    FILE_INPUT = '#goodreads_export_csv, input[name="goodreads_export_csv"], input[type="file"]'
     UPLOAD_BUTTON = 'button:has-text("Upload"), button:has-text("Import")'
+    SEARCH_INPUT = 'input[name="search_term"], input[type="search"]'
 
     # Success indicators
     SUCCESS_MESSAGE = '.alert-success, .notice, :text("successfully"), :text("imported")'
