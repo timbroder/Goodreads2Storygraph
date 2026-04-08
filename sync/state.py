@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -91,7 +91,7 @@ def save_state(csv_hash: str, book_count: int, account_name: str,
     state = {
         "schema_version": 2,
         "last_csv_hash": csv_hash,
-        "last_sync_timestamp": datetime.utcnow().isoformat(),
+        "last_sync_timestamp": datetime.now(timezone.utc).isoformat(),
         "last_book_count": book_count,
         "account_name": account_name,
         "books": books if books is not None else (existing or {}).get("books", {}),
@@ -124,7 +124,7 @@ def mark_book_synced(account_name: str, book_id: str, row_hash: str) -> None:
 
     state["books"][book_id] = {
         "row_hash": row_hash,
-        "last_synced": datetime.utcnow().isoformat(),
+        "last_synced": datetime.now(timezone.utc).isoformat(),
         "status": "synced",
     }
 
@@ -159,7 +159,7 @@ def mark_book_failed(account_name: str, book_id: str, row_hash: str, error: str)
 
     state.setdefault("failed_books", {})[book_id] = {
         "row_hash": row_hash,
-        "last_attempt": datetime.utcnow().isoformat(),
+        "last_attempt": datetime.now(timezone.utc).isoformat(),
         "error": error,
         "retry_count": retry_count,
     }
